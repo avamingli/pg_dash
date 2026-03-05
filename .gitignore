@@ -1,0 +1,19 @@
+# Binaries
+backend/server
+backend/bin/
+
+# Dependencies
+node_modules/
+
+# Build output
+frontend/dist/
+
+# Environment (may contain secrets)
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
