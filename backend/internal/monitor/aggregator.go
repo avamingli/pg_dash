@@ -26,6 +26,7 @@ const (
 // and broadcasts to connected WebSocket clients.
 type Aggregator struct {
 	pgCollector  *pgmon.Collector
+	logCollector *pgmon.LogCollector
 	osCollector  *osmon.SystemCollector
 	delta        *osmon.DeltaCalculator
 	hub          *ws.Hub
@@ -41,14 +42,15 @@ type Aggregator struct {
 }
 
 // NewAggregator creates a new metric aggregator.
-func NewAggregator(pgCollector *pgmon.Collector, osCollector *osmon.SystemCollector, hub *ws.Hub, alertEngine *alert.Engine) *Aggregator {
+func NewAggregator(pgCollector *pgmon.Collector, logCollector *pgmon.LogCollector, osCollector *osmon.SystemCollector, hub *ws.Hub, alertEngine *alert.Engine) *Aggregator {
 	return &Aggregator{
-		pgCollector: pgCollector,
-		osCollector: osCollector,
-		delta:       osmon.NewDeltaCalculator(),
-		hub:         hub,
-		alertEngine: alertEngine,
-		buffer:      make([]model.MetricsSnapshot, RingBufferSize),
+		pgCollector:  pgCollector,
+		logCollector: logCollector,
+		osCollector:  osCollector,
+		delta:        osmon.NewDeltaCalculator(),
+		hub:          hub,
+		alertEngine:  alertEngine,
+		buffer:       make([]model.MetricsSnapshot, RingBufferSize),
 	}
 }
 
@@ -116,6 +118,11 @@ func (a *Aggregator) collect(ctx context.Context) {
 		log.Warn().Err(err).Msg("aggregator: PG metrics collection failed")
 	} else {
 		snapshot.PG = pgMetrics
+	}
+
+	// Collect PG log stats
+	if a.logCollector != nil && snapshot.PG != nil {
+		snapshot.PG.LogStats = a.logCollector.Collect(collectCtx)
 	}
 
 	// Collect OS metrics

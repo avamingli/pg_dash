@@ -15,6 +15,28 @@ type PGMetrics struct {
 	TPS           *TPSStats          `json:"tps,omitempty"`
 	CacheHitRatio float64            `json:"cache_hit_ratio"`
 	DatabaseSizes []DatabaseSize     `json:"database_sizes,omitempty"`
+	LogStats      *LogStats          `json:"log_stats,omitempty"`
+}
+
+// LogStats holds PostgreSQL log severity counts.
+type LogStats struct {
+	Available    bool             `json:"available"`
+	Message      string           `json:"message,omitempty"`
+	FatalCount   int64            `json:"fatal_count"`
+	ErrorCount   int64            `json:"error_count"`
+	WarningCount int64            `json:"warning_count"`
+	PanicCount   int64            `json:"panic_count"`
+	HourlyCounts []HourlyLogCount `json:"hourly_counts,omitempty"`
+	LogFile      string           `json:"log_file,omitempty"`
+}
+
+// HourlyLogCount holds severity counts for a single hour.
+type HourlyLogCount struct {
+	Hour    string `json:"hour"`
+	Fatal   int64  `json:"fatal"`
+	Error   int64  `json:"error"`
+	Warning int64  `json:"warning"`
+	Panic   int64  `json:"panic"`
 }
 
 // OSMetrics holds all OS-level metrics from gopsutil.

@@ -11,6 +11,26 @@ export interface PGMetrics {
   tps?: TPSStats;
   cache_hit_ratio: number;
   database_sizes?: DatabaseSize[];
+  log_stats?: LogStats;
+}
+
+export interface LogStats {
+  available: boolean;
+  message?: string;
+  fatal_count: number;
+  error_count: number;
+  warning_count: number;
+  panic_count: number;
+  hourly_counts?: HourlyLogCount[];
+  log_file?: string;
+}
+
+export interface HourlyLogCount {
+  hour: string;
+  fatal: number;
+  error: number;
+  warning: number;
+  panic: number;
 }
 
 export interface OSMetrics {

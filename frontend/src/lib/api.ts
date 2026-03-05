@@ -9,6 +9,7 @@ import type {
   WALResponse,
   MetricsSnapshot,
   AlertEntry,
+  LogStats,
 } from '@/types/metrics';
 
 const BASE_URL = import.meta.env.VITE_API_URL || '';
@@ -120,6 +121,9 @@ export const api = {
 
   // Checkpoint
   getCheckpointStats: () => request<CheckpointStatsResponse>('/api/checkpoint/stats'),
+
+  // Logs
+  getLogStats: () => request<LogStats>('/api/logs/stats'),
 
   // Alerts
   getAlerts: () => request<AlertEntry[]>('/api/alerts'),

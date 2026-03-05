@@ -60,13 +60,17 @@ func main() {
 	pgCollector := pgmon.NewCollector(pool)
 	osCollector := osmon.NewSystemCollectorWithPGData(os.Getenv("PGDATA"))
 
+	// Create PG log collector
+	logCollector := pgmon.NewLogCollector(pool)
+	logCollector.Init(context.Background())
+
 	// Create alert engine
 	alertEngine := alert.NewEngine(func(data []byte) {
 		hub.Broadcast(data)
 	})
 
 	// Create and start aggregator (2s tick, ring buffer, WebSocket broadcast)
-	agg := monitor.NewAggregator(pgCollector, osCollector, hub, alertEngine)
+	agg := monitor.NewAggregator(pgCollector, logCollector, osCollector, hub, alertEngine)
 	agg.Start(context.Background())
 	defer agg.Stop()
 	log.Info().Msg("metric aggregator started (2s interval)")
@@ -125,6 +129,7 @@ func main() {
 		handler.RegisterSystemRoutes(r, agg)
 		handler.RegisterCheckpointRoutes(r, pool)
 		handler.RegisterMetricsRoutes(r, agg)
+		handler.RegisterLogRoutes(r, agg)
 		handler.RegisterAlertRoutes(r, alertEngine)
 		if snapshotStore != nil {
 			handler.RegisterSnapshotRoutes(r, snapshotStore)

@@ -1,10 +1,10 @@
 import { useMemo, useEffect, useState, useCallback } from 'react';
 import {
-  LineChart, Line, AreaChart, Area,
+  LineChart, Line, AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
 import {
-  Users, Zap, Database, Cpu, HardDrive, TrendingUp,
+  Users, Zap, Database, Cpu, HardDrive, TrendingUp, AlertTriangle,
 } from 'lucide-react';
 import { useMetrics } from '@/contexts/MetricsContext';
 import { api } from '@/lib/api';
@@ -125,6 +125,18 @@ export default function Overview() {
   const diskIO = latest?.system?.disk_io ?? [];
   const totalReadMBps = diskIO.reduce((a, d) => a + d.read_bps, 0) / 1024 / 1024;
   const totalWriteMBps = diskIO.reduce((a, d) => a + d.write_bps, 0) / 1024 / 1024;
+  const logStats = latest?.pg?.log_stats;
+
+  // Log severity chart data from WebSocket history
+  const logChartData = useMemo(() => {
+    const counts = logStats?.hourly_counts ?? [];
+    return counts.map(c => ({
+      hour: c.hour.slice(11, 16), // "HH:MM"
+      fatal: c.fatal,
+      error: c.error,
+      warning: c.warning,
+    }));
+  }, [logStats]);
   const latestTPS = tpsData.length > 0 ? tpsData[tpsData.length - 1] : null;
 
   return (
@@ -183,6 +195,45 @@ export default function Overview() {
           color="cyan"
         />
       </div>
+
+      {/* Row 1.5: PG Log Health */}
+      {logStats?.available && (
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+          <StatCard
+            title="Fatal (24h)"
+            value={String(logStats.fatal_count ?? 0)}
+            icon={AlertTriangle}
+            color={(logStats.fatal_count ?? 0) > 0 ? 'red' : 'green'}
+          />
+          <StatCard
+            title="Errors (24h)"
+            value={String(logStats.error_count ?? 0)}
+            icon={AlertTriangle}
+            color={(logStats.error_count ?? 0) > 0 ? 'red' : 'green'}
+          />
+          <StatCard
+            title="Warnings (24h)"
+            value={String(logStats.warning_count ?? 0)}
+            icon={AlertTriangle}
+            color={(logStats.warning_count ?? 0) > 0 ? 'yellow' : 'green'}
+          />
+          <ChartCard title="Log Severity by Hour (24h)">
+            {logChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={80}>
+                <BarChart data={logChartData}>
+                  <XAxis dataKey="hour" {...AXIS} />
+                  <Tooltip {...TT_STYLE} />
+                  <Bar dataKey="fatal" name="Fatal" fill="#dc2626" stackId="1" />
+                  <Bar dataKey="error" name="Errors" fill="#ef4444" stackId="1" />
+                  <Bar dataKey="warning" name="Warnings" fill="#eab308" stackId="1" />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="text-xs text-zinc-500 text-center py-4">No log data yet</p>
+            )}
+          </ChartCard>
+        </div>
+      )}
 
       {/* Row 2: TPS + Connection States */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
