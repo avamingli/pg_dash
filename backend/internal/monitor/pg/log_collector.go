@@ -22,6 +22,11 @@ import (
 // prefixed format "2026-03-05 ... ERROR:  message".
 var severityRE = regexp.MustCompile(`\b(PANIC|FATAL|ERROR|WARNING)\s*:`)
 
+// timestampRE extracts the leading timestamp from a PostgreSQL log line.
+var timestampRE = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2})`)
+
+const logEntryRingSize = 1000
+
 // LogCollector reads PostgreSQL log files and counts severity levels.
 type LogCollector struct {
 	pool *pgxpool.Pool
@@ -31,6 +36,9 @@ type LogCollector struct {
 	lastFile     string            // last file we read
 	lastOffset   int64             // offset in that file
 	hourlyCounts map[string]*model.HourlyLogCount // keyed by "2006-01-02T15"
+	entries      []model.LogEntry  // ring buffer of parsed log entries
+	entryHead    int               // next write position
+	entryCount   int               // number of valid entries (up to logEntryRingSize)
 	available    bool
 	unavailMsg   string
 }
@@ -40,6 +48,7 @@ func NewLogCollector(pool *pgxpool.Pool) *LogCollector {
 	return &LogCollector{
 		pool:         pool,
 		hourlyCounts: make(map[string]*model.HourlyLogCount),
+		entries:      make([]model.LogEntry, logEntryRingSize),
 	}
 }
 
@@ -155,6 +164,7 @@ func (lc *LogCollector) readNewLines(ctx context.Context) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	bytesRead := offset
+	var newEntries []model.LogEntry
 	for scanner.Scan() {
 		line := scanner.Text()
 		bytesRead += int64(len(line)) + 1 // +1 for newline
@@ -173,10 +183,36 @@ func (lc *LogCollector) readNewLines(ctx context.Context) {
 		case "WARNING":
 			newWarning++
 		}
+
+		// Extract timestamp and message for the entry ring buffer
+		ts := time.Now().UTC().Format(time.RFC3339)
+		if tsMatch := timestampRE.FindStringSubmatch(line); len(tsMatch) >= 2 {
+			ts = tsMatch[1]
+		}
+		// Extract message after "SEVERITY:  "
+		sevIdx := severityRE.FindStringIndex(line)
+		msg := line
+		if sevIdx != nil {
+			msg = strings.TrimSpace(line[sevIdx[1]:])
+		}
+		newEntries = append(newEntries, model.LogEntry{
+			Timestamp: ts,
+			Severity:  matches[1],
+			Message:   msg,
+		})
 	}
 
 	lc.mu.Lock()
 	lc.lastOffset = bytesRead
+
+	// Append new entries to ring buffer
+	for _, e := range newEntries {
+		lc.entries[lc.entryHead] = e
+		lc.entryHead = (lc.entryHead + 1) % logEntryRingSize
+		if lc.entryCount < logEntryRingSize {
+			lc.entryCount++
+		}
+	}
 
 	entry := lc.hourlyCounts[hourKey]
 	if entry == nil {
@@ -239,6 +275,32 @@ func (lc *LogCollector) findLatestLogFile(logDir string) string {
 		}
 	}
 	return latest
+}
+
+// GetEntries returns recent log entries (newest-first), optionally filtered by severity.
+// If severity is empty, all entries are returned. limit caps the number of results.
+func (lc *LogCollector) GetEntries(severity string, limit int) []model.LogEntry {
+	lc.mu.RLock()
+	defer lc.mu.RUnlock()
+
+	if lc.entryCount == 0 {
+		return nil
+	}
+	if limit <= 0 || limit > lc.entryCount {
+		limit = lc.entryCount
+	}
+
+	result := make([]model.LogEntry, 0, limit)
+	// Walk backwards from newest entry
+	for i := 0; i < lc.entryCount && len(result) < limit; i++ {
+		idx := (lc.entryHead - 1 - i + logEntryRingSize) % logEntryRingSize
+		e := lc.entries[idx]
+		if severity != "" && e.Severity != severity {
+			continue
+		}
+		result = append(result, e)
+	}
+	return result
 }
 
 func (lc *LogCollector) getStats() *model.LogStats {

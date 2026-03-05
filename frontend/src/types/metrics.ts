@@ -25,6 +25,12 @@ export interface LogStats {
   log_file?: string;
 }
 
+export interface LogEntry {
+  timestamp: string;
+  severity: string;
+  message: string;
+}
+
 export interface HourlyLogCount {
   hour: string;
   fatal: number;

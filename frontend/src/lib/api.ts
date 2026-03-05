@@ -10,6 +10,7 @@ import type {
   MetricsSnapshot,
   AlertEntry,
   LogStats,
+  LogEntry,
 } from '@/types/metrics';
 
 const BASE_URL = import.meta.env.VITE_API_URL || '';
@@ -124,6 +125,12 @@ export const api = {
 
   // Logs
   getLogStats: () => request<LogStats>('/api/logs/stats'),
+  getLogEntries: (severity?: string, limit = 200) => {
+    const params = new URLSearchParams();
+    if (severity) params.set('severity', severity);
+    params.set('limit', String(limit));
+    return request<LogEntry[]>(`/api/logs/entries?${params}`);
+  },
 
   // Alerts
   getAlerts: () => request<AlertEntry[]>('/api/alerts'),

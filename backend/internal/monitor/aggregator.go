@@ -255,6 +255,14 @@ func (a *Aggregator) GetLatest() *model.MetricsSnapshot {
 	return &snap
 }
 
+// GetLogEntries delegates to the log collector's entry ring buffer.
+func (a *Aggregator) GetLogEntries(severity string, limit int) []model.LogEntry {
+	if a.logCollector == nil {
+		return nil
+	}
+	return a.logCollector.GetEntries(severity, limit)
+}
+
 // SnapshotCount returns the number of snapshots currently stored.
 func (a *Aggregator) SnapshotCount() int {
 	a.mu.RLock()

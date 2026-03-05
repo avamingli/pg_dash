@@ -30,6 +30,13 @@ type LogStats struct {
 	LogFile      string           `json:"log_file,omitempty"`
 }
 
+// LogEntry holds a single parsed log line.
+type LogEntry struct {
+	Timestamp string `json:"timestamp"`
+	Severity  string `json:"severity"`
+	Message   string `json:"message"`
+}
+
 // HourlyLogCount holds severity counts for a single hour.
 type HourlyLogCount struct {
 	Hour    string `json:"hour"`

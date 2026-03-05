@@ -10,6 +10,7 @@ import { useMetrics } from '@/contexts/MetricsContext';
 import { api } from '@/lib/api';
 import { formatBytes, formatPercent } from '@/lib/utils';
 import StatCard from '@/components/StatCard';
+import LogViewerPanel from '@/components/LogViewerPanel';
 import TimeRangeSelector, { type TimeRange, timeRangeToISO } from '@/components/TimeRangeSelector';
 import type { MetricsSnapshot } from '@/types/metrics';
 
@@ -44,6 +45,7 @@ export default function Overview() {
   const [topQueries, setTopQueries] = useState<Record<string, unknown>[]>([]);
   const [timeRange, setTimeRange] = useState<TimeRange>('realtime');
   const [historicalSnapshots, setHistoricalSnapshots] = useState<MetricsSnapshot[]>([]);
+  const [logPanel, setLogPanel] = useState<{ severity?: string } | null>(null);
 
   // Fetch long-running queries and top statements every 10s
   useEffect(() => {
@@ -204,28 +206,31 @@ export default function Overview() {
             value={String(logStats.fatal_count ?? 0)}
             icon={AlertTriangle}
             color={(logStats.fatal_count ?? 0) > 0 ? 'red' : 'green'}
+            onClick={() => setLogPanel({ severity: 'FATAL' })}
           />
           <StatCard
             title="Errors (24h)"
             value={String(logStats.error_count ?? 0)}
             icon={AlertTriangle}
             color={(logStats.error_count ?? 0) > 0 ? 'red' : 'green'}
+            onClick={() => setLogPanel({ severity: 'ERROR' })}
           />
           <StatCard
             title="Warnings (24h)"
             value={String(logStats.warning_count ?? 0)}
             icon={AlertTriangle}
             color={(logStats.warning_count ?? 0) > 0 ? 'yellow' : 'green'}
+            onClick={() => setLogPanel({ severity: 'WARNING' })}
           />
           <ChartCard title="Log Severity by Hour (24h)">
             {logChartData.length > 0 ? (
               <ResponsiveContainer width="100%" height={80}>
-                <BarChart data={logChartData}>
+                <BarChart data={logChartData} onClick={() => setLogPanel({})}>
                   <XAxis dataKey="hour" {...AXIS} />
                   <Tooltip {...TT_STYLE} />
-                  <Bar dataKey="fatal" name="Fatal" fill="#dc2626" stackId="1" />
-                  <Bar dataKey="error" name="Errors" fill="#ef4444" stackId="1" />
-                  <Bar dataKey="warning" name="Warnings" fill="#eab308" stackId="1" />
+                  <Bar dataKey="fatal" name="Fatal" fill="#dc2626" stackId="1" cursor="pointer" />
+                  <Bar dataKey="error" name="Errors" fill="#ef4444" stackId="1" cursor="pointer" />
+                  <Bar dataKey="warning" name="Warnings" fill="#eab308" stackId="1" cursor="pointer" />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
@@ -365,6 +370,14 @@ export default function Overview() {
           )}
         </TableCard>
       </div>
+
+      {/* Log Viewer Panel */}
+      {logPanel && (
+        <LogViewerPanel
+          severity={logPanel.severity}
+          onClose={() => setLogPanel(null)}
+        />
+      )}
     </div>
   );
 }
