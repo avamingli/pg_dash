@@ -14,6 +14,10 @@ import Vacuum from '@/pages/Vacuum';
 import System from '@/pages/System';
 import ServerConfig from '@/pages/ServerConfig';
 import Alerts from '@/pages/Alerts';
+import Cluster from '@/pages/Cluster';
+import Recommendations from '@/pages/Recommendations';
+import QueryHistory from '@/pages/QueryHistory';
+import Storage from '@/pages/Storage';
 import './index.css';
 
 function AppLayout() {
@@ -25,6 +29,7 @@ function AppLayout() {
         <main className="flex-1 overflow-auto p-6 bg-zinc-950">
           <Routes>
             <Route path="/" element={<Overview />} />
+            <Route path="/cluster" element={<Cluster />} />
             <Route path="/activity" element={<Activity />} />
             <Route path="/databases" element={<Databases />} />
             <Route path="/queries" element={<Queries />} />
@@ -34,7 +39,10 @@ function AppLayout() {
             <Route path="/vacuum" element={<Vacuum />} />
             <Route path="/system" element={<System />} />
             <Route path="/config" element={<ServerConfig />} />
+            <Route path="/recommendations" element={<Recommendations />} />
+            <Route path="/history" element={<QueryHistory />} />
             <Route path="/alerts" element={<Alerts />} />
+            <Route path="/storage" element={<Storage />} />
           </Routes>
         </main>
         <StatusBar />

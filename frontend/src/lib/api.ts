@@ -9,8 +9,20 @@ import type {
   WALResponse,
   MetricsSnapshot,
   AlertEntry,
+  AlertRule,
   LogStats,
   LogEntry,
+  ClusterInfo,
+  SegmentInfo,
+  ClusterHealth,
+  SegmentReplication,
+  ConfigHistoryEntry,
+  ResourceQueueStatus,
+  ResourceGroupStatus,
+  PerSegmentStats,
+  WorkfileUsage,
+  ScanResult,
+  QueryHistoryResponse,
 } from '@/types/metrics';
 
 const BASE_URL = import.meta.env.VITE_API_URL || '';
@@ -61,6 +73,14 @@ export const api = {
     request<Record<string, unknown>[]>(`/api/databases/${db}/tables?schema=${encodeURIComponent(schema)}`),
   getTableIO: (db: string, table: string, schema = 'public') =>
     request<Record<string, unknown>>(`/api/databases/${db}/tables/${table}/io?schema=${schema}`),
+  getTableColumns: (db: string, table: string, schema = 'public') =>
+    request<Record<string, unknown>[]>(`/api/databases/${db}/tables/${table}/columns?schema=${schema}`),
+  getTableDDL: (db: string, table: string, schema = 'public') =>
+    request<Record<string, unknown>>(`/api/databases/${db}/tables/${table}/ddl?schema=${schema}`),
+  getTableBloat: (db: string) =>
+    request<Record<string, unknown>[]>(`/api/databases/${db}/tables/bloat`),
+  getTableDistribution: (schema: string, table: string) =>
+    request<Record<string, unknown>>(`/api/cluster/tables/${schema}/${table}/distribution`),
   getDatabaseIndexes: (db: string) =>
     request<Record<string, unknown>[]>(`/api/databases/${db}/indexes`),
 
@@ -132,10 +152,53 @@ export const api = {
     return request<LogEntry[]>(`/api/logs/entries?${params}`);
   },
 
+  // Cluster (Cloudberry / CBDB)
+  getClusterInfo: () => request<ClusterInfo>('/api/cluster/info'),
+  getClusterTopology: () => request<SegmentInfo[]>('/api/cluster/topology'),
+  getClusterHealth: () => request<ClusterHealth>('/api/cluster/health'),
+  getClusterReplication: () => request<SegmentReplication[]>('/api/cluster/replication'),
+  getClusterHistory: (limit = 50) =>
+    request<ConfigHistoryEntry[]>(`/api/cluster/history?limit=${limit}`),
+  getSegmentStats: () => request<PerSegmentStats[]>('/api/cluster/segments/stats'),
+  getSegmentDisk: () => request<Record<string, unknown>[]>('/api/cluster/segments/disk'),
+  getResourceQueues: () => request<ResourceQueueStatus[]>('/api/cluster/resource/queues'),
+  getResourceGroups: () => request<ResourceGroupStatus[]>('/api/cluster/resource/groups'),
+  getResourceGroupConfig: () => request<Record<string, unknown>[]>('/api/cluster/resource/config'),
+  getWorkfileSegments: () => request<WorkfileUsage[]>('/api/cluster/workfiles/segments'),
+  getDataSkew: () => request<Record<string, unknown>[]>('/api/cluster/skew'),
+  getConfigDiffs: () => request<Record<string, unknown>[]>('/api/cluster/config-diffs'),
+  getHostMetrics: () => request<Record<string, unknown>[]>('/api/cluster/hosts'),
+
+  // Recommendations
+  getRecommendations: () => request<ScanResult>('/api/recommendations'),
+  triggerScan: () => request<ScanResult>('/api/recommendations/scan', { method: 'POST' }),
+  executeAction: (sql: string) =>
+    request<{ status: string }>('/api/recommendations/action', {
+      method: 'POST',
+      body: JSON.stringify({ sql }),
+    }),
+
+  // Query History
+  getHistory: (params?: Record<string, string>) => {
+    const p = new URLSearchParams();
+    if (params) {
+      Object.entries(params).forEach(([k, v]) => { if (v) p.set(k, v); });
+    }
+    return request<QueryHistoryResponse>(`/api/history?${p}`);
+  },
+  getHistoryStats: () => request<Record<string, unknown>>('/api/history/stats'),
+
   // Alerts
   getAlerts: () => request<AlertEntry[]>('/api/alerts'),
   getActiveAlerts: () => request<AlertEntry[]>('/api/alerts/active'),
   getAlertCount: () => request<{ count: number }>('/api/alerts/count'),
+  getAlertRules: () => request<AlertRule[]>('/api/alerts/rules'),
+  setAlertRuleEnabled: (id: string, enabled: boolean) =>
+    request<{ status: string }>(`/api/alerts/rules/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    }),
 
   // Snapshots (historical)
   getSnapshots: (from?: string, to?: string) => {

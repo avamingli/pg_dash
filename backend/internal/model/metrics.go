@@ -7,15 +7,18 @@ type MetricsSnapshot struct {
 	Timestamp time.Time  `json:"timestamp"`
 	PG        *PGMetrics `json:"pg,omitempty"`
 	System    *OSMetrics `json:"system,omitempty"`
+	Cluster   *ClusterMetrics `json:"cluster,omitempty"`
 }
 
 // PGMetrics holds all PostgreSQL-level metrics.
 type PGMetrics struct {
-	Connections   *ConnectionSummary `json:"connections,omitempty"`
-	TPS           *TPSStats          `json:"tps,omitempty"`
-	CacheHitRatio float64            `json:"cache_hit_ratio"`
-	DatabaseSizes []DatabaseSize     `json:"database_sizes,omitempty"`
-	LogStats      *LogStats          `json:"log_stats,omitempty"`
+	Connections    *ConnectionSummary `json:"connections,omitempty"`
+	TPS            *TPSStats          `json:"tps,omitempty"`
+	CacheHitRatio  float64            `json:"cache_hit_ratio"`
+	DatabaseSizes  []DatabaseSize     `json:"database_sizes,omitempty"`
+	LogStats       *LogStats          `json:"log_stats,omitempty"`
+	MaxXIDAge      int64              `json:"max_xid_age"`
+	MaxXIDDatabase string             `json:"max_xid_database,omitempty"`
 }
 
 // LogStats holds PostgreSQL log severity counts.

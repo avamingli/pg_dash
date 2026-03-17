@@ -30,9 +30,19 @@ type Alert struct {
 	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 }
 
+// RuleInfo is the JSON-serializable view of a Rule (no Check func).
+type RuleInfo struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Enabled  bool     `json:"enabled"`
+	Cooldown string   `json:"cooldown"`
+}
+
 // Rule defines an alert rule with a check function.
 type Rule struct {
+	ID       string
 	Name     string
+	Enabled  bool
 	Check    func(snapshot *model.MetricsSnapshot) (fire bool, severity Severity, message string)
 	Cooldown time.Duration
 }
@@ -71,7 +81,11 @@ func NewEngine(broadcast BroadcastFunc) *Engine {
 func (e *Engine) Evaluate(snapshot *model.MetricsSnapshot) {
 	now := time.Now()
 
-	for _, rule := range e.rules {
+	for i := range e.rules {
+		rule := &e.rules[i]
+		if !rule.Enabled {
+			continue
+		}
 		fire, severity, message := rule.Check(snapshot)
 
 		if fire {
@@ -198,12 +212,45 @@ func (e *Engine) ActiveCount() int {
 	return count
 }
 
+// GetRules returns all rules as JSON-serializable info.
+func (e *Engine) GetRules() []RuleInfo {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	result := make([]RuleInfo, len(e.rules))
+	for i, r := range e.rules {
+		result[i] = RuleInfo{
+			ID:      r.ID,
+			Name:    r.Name,
+			Enabled: r.Enabled,
+			Cooldown: r.Cooldown.String(),
+		}
+	}
+	return result
+}
+
+// SetRuleEnabled enables or disables a rule by ID.
+func (e *Engine) SetRuleEnabled(id string, enabled bool) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	for i := range e.rules {
+		if e.rules[i].ID == id {
+			e.rules[i].Enabled = enabled
+			return true
+		}
+	}
+	return false
+}
+
 // ── Default Rules ──
 
 func defaultRules() []Rule {
 	return []Rule{
 		{
+			ID:       "connections_warning",
 			Name:     "connections_warning",
+			Enabled:  true,
 			Cooldown: defaultCooldown,
 			Check: func(s *model.MetricsSnapshot) (bool, Severity, string) {
 				if s.PG == nil || s.PG.Connections == nil {
@@ -224,7 +271,9 @@ func defaultRules() []Rule {
 			},
 		},
 		{
+			ID:       "cache_hit_warning",
 			Name:     "cache_hit_warning",
+			Enabled:  true,
 			Cooldown: defaultCooldown,
 			Check: func(s *model.MetricsSnapshot) (bool, Severity, string) {
 				if s.PG == nil {
@@ -244,7 +293,9 @@ func defaultRules() []Rule {
 			},
 		},
 		{
+			ID:       "cpu_usage_warning",
 			Name:     "cpu_usage_warning",
+			Enabled:  true,
 			Cooldown: defaultCooldown,
 			Check: func(s *model.MetricsSnapshot) (bool, Severity, string) {
 				if s.System == nil || s.System.CPU == nil {
@@ -261,7 +312,9 @@ func defaultRules() []Rule {
 			},
 		},
 		{
+			ID:       "cpu_iowait_warning",
 			Name:     "cpu_iowait_warning",
+			Enabled:  true,
 			Cooldown: defaultCooldown,
 			Check: func(s *model.MetricsSnapshot) (bool, Severity, string) {
 				if s.System == nil || s.System.CPU == nil {
@@ -275,7 +328,9 @@ func defaultRules() []Rule {
 			},
 		},
 		{
+			ID:       "disk_usage_warning",
 			Name:     "disk_usage_warning",
+			Enabled:  true,
 			Cooldown: defaultCooldown,
 			Check: func(s *model.MetricsSnapshot) (bool, Severity, string) {
 				if s.System == nil {
@@ -293,7 +348,9 @@ func defaultRules() []Rule {
 			},
 		},
 		{
+			ID:       "memory_usage_warning",
 			Name:     "memory_usage_warning",
+			Enabled:  true,
 			Cooldown: defaultCooldown,
 			Check: func(s *model.MetricsSnapshot) (bool, Severity, string) {
 				if s.System == nil || s.System.Memory == nil {
@@ -305,6 +362,30 @@ func defaultRules() []Rule {
 				}
 				if usage > 90 {
 					return true, SeverityWarning, fmt.Sprintf("Memory usage high: %.1f%%", usage)
+				}
+				return false, "", ""
+			},
+		},
+		{
+			ID:       "xid_age_warning",
+			Name:     "xid_age_warning",
+			Enabled:  true,
+			Cooldown: 10 * time.Minute,
+			Check: func(s *model.MetricsSnapshot) (bool, Severity, string) {
+				if s.PG == nil || s.PG.MaxXIDAge == 0 {
+					return false, "", ""
+				}
+				age := s.PG.MaxXIDAge
+				pct := float64(age) / 2147483647.0 * 100
+				if pct > 75 {
+					return true, SeverityCritical, fmt.Sprintf(
+						"XID wraparound critical: age %d (%.1f%%) in %s — VACUUM FREEZE needed",
+						age, pct, s.PG.MaxXIDDatabase)
+				}
+				if pct > 50 {
+					return true, SeverityWarning, fmt.Sprintf(
+						"XID age high: %d (%.1f%%) in %s — consider VACUUM FREEZE",
+						age, pct, s.PG.MaxXIDDatabase)
 				}
 				return false, "", ""
 			},

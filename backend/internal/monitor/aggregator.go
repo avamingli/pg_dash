@@ -27,6 +27,7 @@ const (
 type Aggregator struct {
 	pgCollector  *pgmon.Collector
 	logCollector *pgmon.LogCollector
+	clusterCollector *pgmon.ClusterCollector
 	osCollector  *osmon.SystemCollector
 	delta        *osmon.DeltaCalculator
 	hub          *ws.Hub
@@ -52,6 +53,16 @@ func NewAggregator(pgCollector *pgmon.Collector, logCollector *pgmon.LogCollecto
 		alertEngine:  alertEngine,
 		buffer:       make([]model.MetricsSnapshot, RingBufferSize),
 	}
+}
+
+// SetClusterCollector enables distributed cluster metric collection. Call before Start().
+func (a *Aggregator) SetClusterCollector(cc *pgmon.ClusterCollector) {
+	a.clusterCollector = cc
+}
+
+// GetClusterCollector returns the cluster collector (nil for vanilla PostgreSQL).
+func (a *Aggregator) GetClusterCollector() *pgmon.ClusterCollector {
+	return a.clusterCollector
 }
 
 // Start begins the metric collection loop. Call Stop() to stop it.
@@ -125,6 +136,11 @@ func (a *Aggregator) collect(ctx context.Context) {
 		snapshot.PG.LogStats = a.logCollector.Collect(collectCtx)
 	}
 
+	// Collect cluster metrics (if distributed)
+	if a.clusterCollector != nil {
+		snapshot.Cluster = a.collectCluster(collectCtx)
+	}
+
 	// Collect OS metrics
 	osMetrics := a.collectOS(collectCtx)
 	snapshot.System = osMetrics
@@ -195,6 +211,26 @@ func (a *Aggregator) collectOS(ctx context.Context) *model.OSMetrics {
 	}
 
 	return osMetrics
+}
+
+func (a *Aggregator) collectCluster(ctx context.Context) *model.ClusterMetrics {
+	cm := &model.ClusterMetrics{}
+
+	health, err := a.clusterCollector.GetClusterHealth(ctx)
+	if err != nil {
+		log.Warn().Err(err).Msg("aggregator: cluster health failed")
+	} else {
+		cm.ClusterHealth = health
+	}
+
+	repl, err := a.clusterCollector.GetSegmentReplication(ctx)
+	if err != nil {
+		log.Warn().Err(err).Msg("aggregator: segment replication failed")
+	} else {
+		cm.SegmentReplication = repl
+	}
+
+	return cm
 }
 
 func (a *Aggregator) broadcast(snapshot model.MetricsSnapshot) {

@@ -4,7 +4,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
 import {
-  Users, Zap, Database, Cpu, HardDrive, TrendingUp, AlertTriangle,
+  Users, Zap, Database, Cpu, HardDrive, TrendingUp, AlertTriangle, Server, RefreshCw, Shield,
 } from 'lucide-react';
 import { useMetrics } from '@/contexts/MetricsContext';
 import { api } from '@/lib/api';
@@ -40,7 +40,7 @@ const TT_STYLE = { contentStyle: { backgroundColor: '#18181b', border: '1px soli
 // ── component ──
 
 export default function Overview() {
-  const { latest, history } = useMetrics();
+  const { latest, history, clusterInfo } = useMetrics();
   const [longRunning, setLongRunning] = useState<Record<string, unknown>[]>([]);
   const [topQueries, setTopQueries] = useState<Record<string, unknown>[]>([]);
   const [timeRange, setTimeRange] = useState<TimeRange>('realtime');
@@ -128,6 +128,9 @@ export default function Overview() {
   const totalReadMBps = diskIO.reduce((a, d) => a + d.read_bps, 0) / 1024 / 1024;
   const totalWriteMBps = diskIO.reduce((a, d) => a + d.write_bps, 0) / 1024 / 1024;
   const logStats = latest?.pg?.log_stats;
+  const xidAge = latest?.pg?.max_xid_age ?? 0;
+  const xidDb = latest?.pg?.max_xid_database ?? '';
+  const xidPct = xidAge / 2147483647 * 100;
 
   // Log severity chart data from WebSocket history
   const logChartData = useMemo(() => {
@@ -198,6 +201,51 @@ export default function Overview() {
         />
       </div>
 
+      {/* Disk Usage Bars */}
+      {(latest?.system?.disks ?? []).length > 0 && (
+        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
+          <h3 className="text-sm font-medium text-zinc-400 mb-3">Disk Usage</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {(latest?.system?.disks ?? []).map((d, i) => (
+              <div key={i} className={`rounded p-3 ${d.is_pgdata ? 'bg-blue-500/10 border border-blue-500/30' : 'bg-zinc-800/50'}`}>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-mono text-zinc-300 truncate">
+                    {d.mount_point}
+                    {d.is_pgdata && <span className="ml-1.5 text-[10px] text-blue-400 font-sans">PGDATA</span>}
+                  </span>
+                  <span className={`text-xs font-mono ${d.used_percent > 90 ? 'text-red-400' : d.used_percent > 80 ? 'text-yellow-400' : 'text-zinc-400'}`}>
+                    {d.used_percent.toFixed(1)}%
+                  </span>
+                </div>
+                <div className="w-full h-2 bg-zinc-700 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${d.used_percent > 90 ? 'bg-red-500' : d.used_percent > 80 ? 'bg-yellow-500' : d.is_pgdata ? 'bg-blue-500' : 'bg-zinc-400'}`}
+                    style={{ width: `${Math.min(d.used_percent, 100)}%` }}
+                  />
+                </div>
+                <div className="flex justify-between mt-1 text-[10px] text-zinc-500">
+                  <span>{formatBytes(d.used)} used</span>
+                  <span>{formatBytes(d.total)} total</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* XID Age Card */}
+      {xidAge > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <StatCard
+            title="XID Age"
+            value={`${(xidAge / 1_000_000).toFixed(0)}M`}
+            subtitle={`${xidPct.toFixed(1)}% of wraparound — ${xidDb}`}
+            icon={Shield}
+            color={xidPct > 75 ? 'red' : xidPct > 50 ? 'yellow' : 'green'}
+          />
+        </div>
+      )}
+
       {/* Row 1.5: PG Log Health */}
       {logStats?.available && (
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
@@ -239,6 +287,43 @@ export default function Overview() {
           </ChartCard>
         </div>
       )}
+
+      {/* Cluster Health (distributed mode only) */}
+      {clusterInfo && clusterInfo.mode !== 'postgresql' && latest?.cluster?.cluster_health && (() => {
+        const h = latest.cluster!.cluster_health!;
+        const totalPri = h.primaries_up + h.primaries_down;
+        const totalMir = h.mirrors_up + h.mirrors_down;
+        return (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <StatCard
+              title="Segments"
+              value={`${h.primaries_up} / ${totalPri} up`}
+              subtitle={h.primaries_down > 0 ? `${h.primaries_down} DOWN` : 'All primaries healthy'}
+              icon={Server}
+              color={h.primaries_down > 0 ? 'red' : 'green'}
+            />
+            <StatCard
+              title="Mirrors"
+              value={totalMir > 0 ? `${h.mirrors_up} / ${totalMir} up` : 'No mirrors'}
+              subtitle={h.mirrors_down > 0 ? `${h.mirrors_down} DOWN` : totalMir > 0 ? 'All mirrors healthy' : ''}
+              icon={Server}
+              color={h.mirrors_down > 0 ? 'red' : totalMir > 0 ? 'green' : 'blue'}
+            />
+            <StatCard
+              title="Sync Status"
+              value={h.not_synchronized > 0 ? `${h.not_synchronized} not synced` : 'All synced'}
+              icon={RefreshCw}
+              color={h.not_synchronized > 0 ? 'yellow' : 'green'}
+            />
+            <StatCard
+              title="Balance"
+              value={h.unbalanced > 0 ? `${h.unbalanced} unbalanced` : 'Balanced'}
+              icon={Server}
+              color={h.unbalanced > 0 ? 'yellow' : 'green'}
+            />
+          </div>
+        );
+      })()}
 
       {/* Row 2: TPS + Connection States */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

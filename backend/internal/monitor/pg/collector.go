@@ -115,6 +115,23 @@ func (c *Collector) DatabaseSizes(ctx context.Context) ([]model.DatabaseSize, er
 	return sizes, nil
 }
 
+// XIDAge returns the maximum XID age across all non-template databases.
+func (c *Collector) XIDAge(ctx context.Context) (int64, string, error) {
+	var age int64
+	var dbname string
+	err := c.pool.QueryRow(ctx, `
+		SELECT datname, age(datfrozenxid)
+		FROM pg_database
+		WHERE datistemplate = false
+		ORDER BY age(datfrozenxid) DESC
+		LIMIT 1
+	`).Scan(&dbname, &age)
+	if err != nil {
+		return 0, "", fmt.Errorf("XIDAge: %w", err)
+	}
+	return age, dbname, nil
+}
+
 // CollectAll gathers all PG metrics in a single call.
 func (c *Collector) CollectAll(ctx context.Context) (*model.PGMetrics, error) {
 	metrics := &model.PGMetrics{}
@@ -142,6 +159,13 @@ func (c *Collector) CollectAll(ctx context.Context) (*model.PGMetrics, error) {
 		return nil, fmt.Errorf("CollectAll: %w", err)
 	}
 	metrics.DatabaseSizes = dbSizes
+
+	// XID age (supplementary — don't fail if unavailable)
+	xidAge, xidDB, err := c.XIDAge(ctx)
+	if err == nil {
+		metrics.MaxXIDAge = xidAge
+		metrics.MaxXIDDatabase = xidDB
+	}
 
 	return metrics, nil
 }

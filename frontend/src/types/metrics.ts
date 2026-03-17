@@ -4,6 +4,7 @@ export interface MetricsSnapshot {
   timestamp: string;
   pg?: PGMetrics;
   system?: OSMetrics;
+  cluster?: ClusterMetrics;
 }
 
 export interface PGMetrics {
@@ -12,6 +13,8 @@ export interface PGMetrics {
   cache_hit_ratio: number;
   database_sizes?: DatabaseSize[];
   log_stats?: LogStats;
+  max_xid_age?: number;
+  max_xid_database?: string;
 }
 
 export interface LogStats {
@@ -37,6 +40,98 @@ export interface HourlyLogCount {
   error: number;
   warning: number;
   panic: number;
+}
+
+// ── Distributed Cluster (Cloudberry / CBDB) ──
+
+export interface ClusterInfo {
+  mode: 'postgresql' | 'cloudberry';
+  version: string;
+  pg_version: string;
+  num_segments: number;
+  has_mirrors: boolean;
+  resource_mgr: string;
+}
+
+export interface ClusterMetrics {
+  cluster_health?: ClusterHealth;
+  segment_replication?: SegmentReplication[];
+}
+
+export interface ClusterHealth {
+  primaries_up: number;
+  primaries_down: number;
+  mirrors_up: number;
+  mirrors_down: number;
+  unbalanced: number;
+  not_synchronized: number;
+}
+
+export interface SegmentInfo {
+  dbid: number;
+  content_id: number;
+  role: string;
+  preferred_role: string;
+  mode: string;
+  status: string;
+  hostname: string;
+  port: number;
+  datadir: string;
+  is_coordinator: boolean;
+  is_balanced: boolean;
+}
+
+export interface SegmentReplication {
+  gp_segment_id: number;
+  state: string;
+  sync_state: string;
+  sync_error: string;
+  write_lag: string;
+  flush_lag: string;
+  replay_lag: string;
+}
+
+export interface ConfigHistoryEntry {
+  time: string;
+  dbid: number;
+  description: string;
+}
+
+export interface ResourceQueueStatus {
+  name: string;
+  count_limit: string;
+  count_value: string;
+  cost_limit: string;
+  cost_value: string;
+  memory_limit: string;
+  memory_value: string;
+  waiters: number;
+  holders: number;
+}
+
+export interface ResourceGroupStatus {
+  group_name: string;
+  num_running: number;
+  num_queueing: number;
+  num_queued: number;
+  num_executed: number;
+  total_queue_duration: string;
+}
+
+export interface PerSegmentStats {
+  gp_segment_id: number;
+  xact_commit: number;
+  xact_rollback: number;
+  blks_read: number;
+  blks_hit: number;
+  temp_files: number;
+  temp_bytes: number;
+}
+
+export interface WorkfileUsage {
+  gp_segment_id: number;
+  size: number;
+  num_files: number;
 }
 
 export interface OSMetrics {
@@ -163,10 +258,15 @@ export interface ProcessInfo {
 
 export interface ServerInfo {
   version: string;
+  database: string;
+  user?: string;
+  host?: string;
+  port?: string;
   start_time: string;
   uptime: string;
   max_connections: number;
   settings: ServerSetting[];
+  cluster_info?: ClusterInfo;
 }
 
 export interface ServerSetting {
@@ -205,6 +305,7 @@ export interface ActivityConnection {
   wait_event: string;
   state: string;
   backend_type: string;
+  application_name: string;
   query_id: number;
   query: string;
 }
@@ -272,4 +373,72 @@ export interface AlertEntry {
   timestamp: string;
   resolved: boolean;
   resolved_at?: string;
+}
+
+// ── Alert Rules ──
+
+export interface AlertRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  cooldown: string;
+}
+
+// ── Recommendations ──
+
+export interface Recommendation {
+  category: string;
+  severity: 'info' | 'warning' | 'critical';
+  schema: string;
+  table: string;
+  database?: string;
+  current_value: string;
+  threshold: string;
+  message: string;
+  action: string;
+  action_sql: string;
+  size_bytes: number;
+}
+
+export interface ScanSummary {
+  total: number;
+  critical: number;
+  warning: number;
+  info: number;
+  by_category: Record<string, number>;
+}
+
+export interface ScanResult {
+  scanned_at: string;
+  duration_ms: number;
+  recommendations: Recommendation[];
+  summary: ScanSummary;
+}
+
+// ── Query History ──
+
+export interface QueryHistoryEntry {
+  id: number;
+  queryid: number;
+  database: string;
+  username: string;
+  query_text: string;
+  status: string;
+  submitted_at: string;
+  ended_at?: string;
+  duration_ms: number;
+  rows_affected: number;
+  shared_blks_hit: number;
+  shared_blks_read: number;
+  temp_blks_written: number;
+  wal_bytes: number;
+  calls: number;
+  mean_exec_time: number;
+}
+
+export interface QueryHistoryResponse {
+  entries: QueryHistoryEntry[];
+  total: number;
+  limit: number;
+  offset: number;
 }

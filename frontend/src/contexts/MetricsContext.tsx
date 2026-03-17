@@ -1,6 +1,7 @@
-import { createContext, useContext, useState, useCallback, useRef, useMemo, type ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, useRef, useMemo, type ReactNode } from 'react';
 import { useWebSocket } from '@/hooks/useWebSocket';
-import type { MetricsSnapshot } from '@/types/metrics';
+import { api } from '@/lib/api';
+import type { MetricsSnapshot, ClusterInfo } from '@/types/metrics';
 
 const MAX_HISTORY = 300; // 10 min at 2s intervals
 
@@ -9,6 +10,7 @@ interface MetricsContextValue {
   history: MetricsSnapshot[];
   connected: boolean;
   send: (data: unknown) => void;
+  clusterInfo: ClusterInfo | null;
 }
 
 const MetricsContext = createContext<MetricsContextValue>({
@@ -16,6 +18,7 @@ const MetricsContext = createContext<MetricsContextValue>({
   history: [],
   connected: false,
   send: () => {},
+  clusterInfo: null,
 });
 
 export function useMetrics() {
@@ -29,6 +32,7 @@ interface MetricsProviderProps {
 export function MetricsProvider({ children }: MetricsProviderProps) {
   const [latest, setLatest] = useState<MetricsSnapshot | null>(null);
   const historyRef = useRef<MetricsSnapshot[]>([]);
+  const [clusterInfo, setClusterInfo] = useState<ClusterInfo | null>(null);
   const [history, setHistory] = useState<MetricsSnapshot[]>([]);
 
   // Build WS URL — use VITE_WS_URL (direct to backend) when set,
@@ -56,8 +60,19 @@ export function MetricsProvider({ children }: MetricsProviderProps) {
 
   const { connected, send } = useWebSocket({ url: wsUrl, onMessage });
 
+  // Fetch cluster info once on mount
+  useEffect(() => {
+    api.getServerInfo()
+      .then(info => {
+        if (info.cluster_info) {
+          setClusterInfo(info.cluster_info);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   return (
-    <MetricsContext.Provider value={{ latest, history, connected, send }}>
+    <MetricsContext.Provider value={{ latest, history, connected, send, clusterInfo }}>
       {children}
     </MetricsContext.Provider>
   );

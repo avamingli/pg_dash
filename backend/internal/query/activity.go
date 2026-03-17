@@ -18,6 +18,7 @@ SELECT
     COALESCE(wait_event, '') AS wait_event,
     COALESCE(state, '') AS state,
     COALESCE(backend_type, '') AS backend_type,
+    COALESCE(application_name, '') AS application_name,
     COALESCE(query_id, 0) AS query_id,
     COALESCE(query, '') AS query
 FROM pg_stat_activity

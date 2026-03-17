@@ -49,7 +49,18 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to test PostgreSQL connection")
 	}
-	log.Info().Str("version", version).Msg("connected to PostgreSQL")
+	clusterInfo := connMgr.GetClusterInfo()
+	if clusterInfo.IsDistributed() {
+		log.Info().
+			Str("mode", string(clusterInfo.Mode)).
+			Str("version", clusterInfo.Version).
+			Int("segments", clusterInfo.NumSegments).
+			Bool("mirrors", clusterInfo.HasMirrors).
+			Str("resource_mgr", clusterInfo.ResourceMgr).
+			Msg("connected to distributed cluster")
+	} else {
+		log.Info().Str("version", version).Msg("connected to PostgreSQL")
+	}
 
 	// Create WebSocket hub
 	hub := ws.NewHub()
@@ -71,6 +82,13 @@ func main() {
 
 	// Create and start aggregator (2s tick, ring buffer, WebSocket broadcast)
 	agg := monitor.NewAggregator(pgCollector, logCollector, osCollector, hub, alertEngine)
+
+	// If distributed, create cluster collector and attach to aggregator
+	if clusterInfo.IsDistributed() {
+		clusterCollector := pgmon.NewClusterCollector(pool, clusterInfo)
+		agg.SetClusterCollector(clusterCollector)
+	}
+
 	agg.Start(context.Background())
 	defer agg.Stop()
 	log.Info().Msg("metric aggregator started (2s interval)")
@@ -85,6 +103,15 @@ func main() {
 	} else {
 		snapshotStore.Start()
 		defer snapshotStore.Stop()
+	}
+
+	// Create query history service
+	historySvc := service.NewHistoryService(pool)
+	if err := historySvc.Init(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("failed to init query history — history disabled")
+	} else {
+		historySvc.Start(context.Background())
+		defer historySvc.Stop()
 	}
 
 	// Create router
@@ -118,9 +145,9 @@ func main() {
 
 	// API routes
 	r.Route("/api", func(r chi.Router) {
-		handler.RegisterServerRoutes(r, pool)
+		handler.RegisterServerRoutes(r, pool, clusterInfo)
 		handler.RegisterActivityRoutes(r, pool)
-		handler.RegisterDatabaseRoutes(r, pool)
+		handler.RegisterDatabaseRoutes(r, pool, connMgr)
 		handler.RegisterIndexRoutes(r, pool)
 		handler.RegisterQueryRoutes(r, pool)
 		handler.RegisterLockRoutes(r, pool)
@@ -131,8 +158,13 @@ func main() {
 		handler.RegisterMetricsRoutes(r, agg)
 		handler.RegisterLogRoutes(r, agg)
 		handler.RegisterAlertRoutes(r, alertEngine)
+		handler.RegisterRecommendRoutes(r, pool, clusterInfo)
+		handler.RegisterHistoryRoutes(r, historySvc)
 		if snapshotStore != nil {
 			handler.RegisterSnapshotRoutes(r, snapshotStore)
+		}
+		if clusterInfo.IsDistributed() {
+			handler.RegisterClusterRoutes(r, pool, agg, clusterInfo)
 		}
 	})
 

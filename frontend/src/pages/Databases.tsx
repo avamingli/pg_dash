@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { Database, ArrowLeft, Search, RefreshCw, Loader2 } from 'lucide-react';
+import { Database, ArrowLeft, Search, RefreshCw, Loader2, Code, Columns, Share2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { formatBytes, formatPercent, formatNumber } from '@/lib/utils';
 import type { DatabaseStats } from '@/types/metrics';
@@ -8,6 +8,7 @@ import type { DatabaseStats } from '@/types/metrics';
 
 type TableRow = Record<string, unknown>;
 type SortDir = 'asc' | 'desc';
+type DetailTab = 'stats' | 'columns' | 'ddl';
 
 // ── helpers ──
 
@@ -36,6 +37,11 @@ export default function Databases() {
   const [detailTable, setDetailTable] = useState<TableRow | null>(null);
   const [tableIO, setTableIO] = useState<Record<string, unknown> | null>(null);
   const [tableIndexes, setTableIndexes] = useState<TableRow[]>([]);
+  const [tableColumns, setTableColumns] = useState<TableRow[]>([]);
+  const [tableDDL, setTableDDL] = useState('');
+  const [tableDist, setTableDist] = useState<Record<string, unknown> | null>(null);
+  const [bloatData, setBloatData] = useState<TableRow[]>([]);
+  const [detailTab, setDetailTab] = useState<DetailTab>('stats');
   const [actionMsg, setActionMsg] = useState('');
 
   // Fetch databases
@@ -56,16 +62,29 @@ export default function Databases() {
       .finally(() => setTablesLoading(false));
   }, [selectedDb]);
 
-  // Fetch table detail (IO + indexes)
+  // Fetch table detail (IO + indexes + columns + DDL + distribution)
   useEffect(() => {
-    if (!selectedDb || !detailTable) { setTableIO(null); setTableIndexes([]); return; }
+    if (!selectedDb || !detailTable) {
+      setTableIO(null); setTableIndexes([]); setTableColumns([]); setTableDDL(''); setTableDist(null);
+      return;
+    }
     const schema = String(detailTable.schemaname);
     const table = String(detailTable.relname);
+    setDetailTab('stats');
     api.getTableIO(selectedDb, table, schema).then(setTableIO).catch(() => setTableIO(null));
     api.getDatabaseIndexes(selectedDb).then(d => {
       setTableIndexes((d ?? []).filter(idx => String(idx.relname) === table && String(idx.schemaname) === schema));
     }).catch(() => setTableIndexes([]));
+    api.getTableColumns(selectedDb, table, schema).then(setTableColumns).catch(() => setTableColumns([]));
+    api.getTableDDL(selectedDb, table, schema).then(d => setTableDDL(String(d?.ddl ?? ''))).catch(() => setTableDDL(''));
+    api.getTableDistribution(schema, table).then(setTableDist).catch(() => setTableDist(null));
   }, [selectedDb, detailTable]);
+
+  // Fetch bloat data when tables load
+  useEffect(() => {
+    if (!selectedDb || tables.length === 0) { setBloatData([]); return; }
+    api.getTableBloat(selectedDb).then(setBloatData).catch(() => setBloatData([]));
+  }, [selectedDb, tables]);
 
   function handleSort(key: string) {
     if (tableSortKey === key) {
@@ -95,6 +114,16 @@ export default function Databases() {
       return 0;
     });
   }, [tables, searchQuery, tableSortKey, tableSortDir]);
+
+  // Build bloat lookup by schema.table
+  const bloatMap = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const b of bloatData) {
+      const key = `${b.schemaname || b.schema}.${b.tblname || b.table_name}`;
+      m.set(key, Number(b.bloat_pct ?? 0));
+    }
+    return m;
+  }, [bloatData]);
 
   async function triggerAction(action: 'vacuum' | 'analyze') {
     if (!selectedDb || !detailTable) return;
@@ -213,7 +242,7 @@ export default function Databases() {
                     {[
                       ['schemaname', 'Schema'], ['relname', 'Table'], ['total_size', 'Total Size'],
                       ['table_size', 'Table Size'], ['indexes_size', 'Index Size'], ['n_live_tup', 'Live Rows'],
-                      ['n_dead_tup', 'Dead Rows'], ['dead_tuple_ratio', 'Dead %'],
+                      ['n_dead_tup', 'Dead Rows'], ['dead_tuple_ratio', 'Dead %'], ['bloat', 'Bloat'],
                       ['seq_scan', 'Seq Scans'], ['idx_scan', 'Idx Scans'],
                       ['last_autovacuum', 'Last Vacuum'], ['last_autoanalyze', 'Last Analyze'],
                     ].map(([key, label]) => (
@@ -238,6 +267,20 @@ export default function Databases() {
                         <td className="p-2 font-mono text-zinc-300">{formatNumber(Number(t.n_live_tup ?? 0))}</td>
                         <td className="p-2 font-mono text-zinc-400">{formatNumber(Number(t.n_dead_tup ?? 0))}</td>
                         <td className={`p-2 font-mono ${deadTupleColor(deadPct)}`}>{deadPct.toFixed(1)}%</td>
+                        <td className="p-2">
+                          {(() => {
+                            const bloatPct = bloatMap.get(`${t.schemaname}.${t.relname}`) ?? 0;
+                            const w = Math.min(bloatPct, 100);
+                            return (
+                              <div className="flex items-center gap-1.5">
+                                <div className="w-12 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                                  <div className={`h-full rounded-full ${bloatPct > 40 ? 'bg-red-500' : bloatPct > 20 ? 'bg-yellow-500' : 'bg-blue-500'}`} style={{ width: `${w}%` }} />
+                                </div>
+                                <span className="text-xs font-mono text-zinc-400">{bloatPct.toFixed(1)}%</span>
+                              </div>
+                            );
+                          })()}
+                        </td>
                         <td className="p-2 font-mono text-zinc-400">{formatNumber(Number(t.seq_scan ?? 0))}</td>
                         <td className="p-2 font-mono text-zinc-400">{formatNumber(Number(t.idx_scan ?? 0))}</td>
                         <td className="p-2 text-xs text-zinc-500">{t.last_autovacuum ? new Date(String(t.last_autovacuum)).toLocaleString() : 'Never'}</td>
@@ -246,7 +289,7 @@ export default function Databases() {
                     );
                   })}
                   {filteredTables.length === 0 && (
-                    <tr><td colSpan={12} className="p-6 text-center text-zinc-500">No tables found</td></tr>
+                    <tr><td colSpan={13} className="p-6 text-center text-zinc-500">No tables found</td></tr>
                   )}
                 </tbody>
               </table>
@@ -256,61 +299,138 @@ export default function Databases() {
 
         {/* Detail panel */}
         {detailTable && (
-          <div className="w-96 shrink-0 bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+          <div className="w-[420px] shrink-0 bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
             <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
               <h3 className="text-sm font-medium text-zinc-200">
                 {String(detailTable.schemaname)}.{String(detailTable.relname)}
               </h3>
               <button onClick={() => setDetailTable(null)} className="text-zinc-500 hover:text-white text-xs">Close</button>
             </div>
-            <div className="p-4 space-y-4 overflow-y-auto max-h-[70vh]">
-              {/* Stats */}
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <Stat label="Total Size" value={formatBytes(Number(detailTable.total_size ?? 0))} />
-                <Stat label="Live Rows" value={formatNumber(Number(detailTable.n_live_tup ?? 0))} />
-                <Stat label="Dead Rows" value={formatNumber(Number(detailTable.n_dead_tup ?? 0))} />
-                <Stat label="Seq Scans" value={formatNumber(Number(detailTable.seq_scan ?? 0))} />
-                <Stat label="Idx Scans" value={formatNumber(Number(detailTable.idx_scan ?? 0))} />
-                <Stat label="Inserts" value={formatNumber(Number(detailTable.n_tup_ins ?? 0))} />
-                <Stat label="Updates" value={formatNumber(Number(detailTable.n_tup_upd ?? 0))} />
-                <Stat label="Deletes" value={formatNumber(Number(detailTable.n_tup_del ?? 0))} />
-              </div>
 
-              {/* I/O Stats */}
-              {tableIO && (
-                <div>
-                  <h4 className="text-xs text-zinc-500 uppercase tracking-wide mb-2">I/O Stats</h4>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <Stat label="Heap Blks Read" value={formatNumber(Number(tableIO.heap_blks_read ?? 0))} />
-                    <Stat label="Heap Blks Hit" value={formatNumber(Number(tableIO.heap_blks_hit ?? 0))} />
-                    <Stat label="Idx Blks Read" value={formatNumber(Number(tableIO.idx_blks_read ?? 0))} />
-                    <Stat label="Idx Blks Hit" value={formatNumber(Number(tableIO.idx_blks_hit ?? 0))} />
-                    <Stat label="Toast Blks Read" value={formatNumber(Number(tableIO.toast_blks_read ?? 0))} />
-                    <Stat label="Toast Blks Hit" value={formatNumber(Number(tableIO.toast_blks_hit ?? 0))} />
-                  </div>
+            {/* Tab bar */}
+            <div className="flex gap-1 px-4 pt-2 border-b border-zinc-800">
+              {([
+                ['stats', 'Stats', Database],
+                ['columns', 'Columns', Columns],
+                ['ddl', 'DDL', Code],
+              ] as const).map(([key, label, Icon]) => (
+                <button key={key} onClick={() => setDetailTab(key)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-t transition-colors ${
+                    detailTab === key ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-white'
+                  }`}>
+                  <Icon size={12} /> {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="p-4 space-y-4 overflow-y-auto max-h-[70vh]">
+              {/* Distribution policy (distributed mode) */}
+              {tableDist && (
+                <div className="flex items-center gap-2 text-xs bg-blue-500/10 text-blue-400 rounded p-2">
+                  <Share2 size={12} />
+                  <span className="font-mono">
+                    {String(tableDist.policy_type)}{tableDist.dist_columns ? ` BY (${tableDist.dist_columns})` : ''}
+                  </span>
                 </div>
               )}
 
-              {/* Indexes */}
-              <div>
-                <h4 className="text-xs text-zinc-500 uppercase tracking-wide mb-2">
-                  Indexes ({tableIndexes.length})
-                </h4>
-                {tableIndexes.length > 0 ? (
-                  <div className="space-y-1">
-                    {tableIndexes.map((idx, i) => (
-                      <div key={i} className="bg-zinc-800/50 rounded p-2 text-xs">
-                        <p className="text-zinc-200 font-mono">{String(idx.indexrelname)}</p>
-                        <p className="text-zinc-500 mt-0.5">
-                          Size: {formatBytes(Number(idx.size ?? 0))} | Scans: {formatNumber(Number(idx.idx_scan ?? 0))}
-                        </p>
-                      </div>
-                    ))}
+              {/* Stats tab */}
+              {detailTab === 'stats' && <>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <Stat label="Total Size" value={formatBytes(Number(detailTable.total_size ?? 0))} />
+                  <Stat label="Live Rows" value={formatNumber(Number(detailTable.n_live_tup ?? 0))} />
+                  <Stat label="Dead Rows" value={formatNumber(Number(detailTable.n_dead_tup ?? 0))} />
+                  <Stat label="Seq Scans" value={formatNumber(Number(detailTable.seq_scan ?? 0))} />
+                  <Stat label="Idx Scans" value={formatNumber(Number(detailTable.idx_scan ?? 0))} />
+                  <Stat label="Inserts" value={formatNumber(Number(detailTable.n_tup_ins ?? 0))} />
+                  <Stat label="Updates" value={formatNumber(Number(detailTable.n_tup_upd ?? 0))} />
+                  <Stat label="Deletes" value={formatNumber(Number(detailTable.n_tup_del ?? 0))} />
+                </div>
+
+                {/* I/O Stats */}
+                {tableIO && (
+                  <div>
+                    <h4 className="text-xs text-zinc-500 uppercase tracking-wide mb-2">I/O Stats</h4>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <Stat label="Heap Blks Read" value={formatNumber(Number(tableIO.heap_blks_read ?? 0))} />
+                      <Stat label="Heap Blks Hit" value={formatNumber(Number(tableIO.heap_blks_hit ?? 0))} />
+                      <Stat label="Idx Blks Read" value={formatNumber(Number(tableIO.idx_blks_read ?? 0))} />
+                      <Stat label="Idx Blks Hit" value={formatNumber(Number(tableIO.idx_blks_hit ?? 0))} />
+                      <Stat label="Toast Blks Read" value={formatNumber(Number(tableIO.toast_blks_read ?? 0))} />
+                      <Stat label="Toast Blks Hit" value={formatNumber(Number(tableIO.toast_blks_hit ?? 0))} />
+                    </div>
                   </div>
-                ) : (
-                  <p className="text-xs text-zinc-500">No indexes</p>
                 )}
-              </div>
+
+                {/* Indexes */}
+                <div>
+                  <h4 className="text-xs text-zinc-500 uppercase tracking-wide mb-2">
+                    Indexes ({tableIndexes.length})
+                  </h4>
+                  {tableIndexes.length > 0 ? (
+                    <div className="space-y-1">
+                      {tableIndexes.map((idx, i) => (
+                        <div key={i} className="bg-zinc-800/50 rounded p-2 text-xs">
+                          <p className="text-zinc-200 font-mono">{String(idx.indexrelname)}</p>
+                          <p className="text-zinc-500 mt-0.5">
+                            Size: {formatBytes(Number(idx.size ?? 0))} | Scans: {formatNumber(Number(idx.idx_scan ?? 0))}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-zinc-500">No indexes</p>
+                  )}
+                </div>
+              </>}
+
+              {/* Columns tab */}
+              {detailTab === 'columns' && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-zinc-500 border-b border-zinc-800">
+                        <th className="p-1.5">#</th>
+                        <th className="p-1.5">Column</th>
+                        <th className="p-1.5">Type</th>
+                        <th className="p-1.5">Nullable</th>
+                        <th className="p-1.5">Default</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tableColumns.map((col, i) => (
+                        <tr key={i} className="border-b border-zinc-800/50">
+                          <td className="p-1.5 text-zinc-500 font-mono">{String(col.ordinal)}</td>
+                          <td className="p-1.5 text-zinc-200 font-mono">{String(col.column_name)}</td>
+                          <td className="p-1.5 text-zinc-400 font-mono">{String(col.data_type)}</td>
+                          <td className="p-1.5">{col.is_nullable ? <span className="text-yellow-400">YES</span> : <span className="text-zinc-500">NO</span>}</td>
+                          <td className="p-1.5 text-zinc-500 font-mono truncate max-w-[120px]">{String(col.column_default || '')}</td>
+                        </tr>
+                      ))}
+                      {tableColumns.length === 0 && (
+                        <tr><td colSpan={5} className="p-4 text-center text-zinc-500">No columns found</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* DDL tab */}
+              {detailTab === 'ddl' && (
+                <div className="relative">
+                  <pre className="bg-zinc-950 border border-zinc-800 rounded p-3 text-xs font-mono text-zinc-300 overflow-x-auto whitespace-pre-wrap max-h-[50vh]">
+                    {tableDDL || 'Loading DDL...'}
+                  </pre>
+                  {tableDDL && (
+                    <button
+                      onClick={() => navigator.clipboard.writeText(tableDDL)}
+                      className="absolute top-2 right-2 px-2 py-1 text-[10px] rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors"
+                    >
+                      Copy
+                    </button>
+                  )}
+                </div>
+              )}
 
               {/* Actions */}
               <div className="flex gap-2">

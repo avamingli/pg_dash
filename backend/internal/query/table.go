@@ -27,7 +27,6 @@ SELECT
     s.n_tup_upd,
     s.n_tup_del,
     s.n_tup_hot_upd,
-    s.n_tup_newpage_upd,
     s.n_mod_since_analyze,
     s.n_ins_since_vacuum,
     s.last_vacuum,
@@ -104,6 +103,38 @@ SELECT
     COALESCE(tidx_blks_hit, 0) AS tidx_blks_hit
 FROM pg_statio_user_tables
 WHERE schemaname = $1 AND relname = $2`
+
+// TableColumns returns column definitions for a table.
+// $1 = schema name, $2 = table name.
+const TableColumns = `
+SELECT
+    a.attnum AS ordinal,
+    a.attname AS column_name,
+    pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
+    NOT a.attnotnull AS is_nullable,
+    COALESCE(pg_get_expr(d.adbin, d.adrelid), '') AS column_default,
+    COALESCE(col_description(a.attrelid, a.attnum), '') AS description
+FROM pg_attribute a
+LEFT JOIN pg_attrdef d ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+WHERE a.attrelid = ($1 || '.' || $2)::regclass
+  AND a.attnum > 0
+  AND NOT a.attisdropped
+ORDER BY a.attnum`
+
+// TableDDL returns a simple DDL representation.
+// Uses information_schema for portability.
+// $1 = schema name, $2 = table name.
+const TableDDL = `
+SELECT
+    'CREATE TABLE ' || $1 || '.' || $2 || ' (' || chr(10) ||
+    string_agg(
+        '    ' || column_name || ' ' || data_type ||
+        CASE WHEN is_nullable = 'NO' THEN ' NOT NULL' ELSE '' END ||
+        CASE WHEN column_default IS NOT NULL THEN ' DEFAULT ' || column_default ELSE '' END,
+        ',' || chr(10) ORDER BY ordinal_position
+    ) || chr(10) || ');' AS ddl
+FROM information_schema.columns
+WHERE table_schema = $1 AND table_name = $2`
 
 // TableIOStatsAll returns I/O stats for all user tables.
 const TableIOStatsAll = `

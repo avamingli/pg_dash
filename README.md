@@ -1,26 +1,52 @@
 # PG Dash
 
-**A full-featured PostgreSQL monitoring dashboard, built from scratch with AI in 24 hours.**
+**A full-featured monitoring dashboard for PostgreSQL and MPP clusters (Apache Cloudberry, Greenplum).**
 
-Connect to any existing PostgreSQL instance and get instant visibility into connections, queries, locks, replication, system resources, and more — all through a modern dark-themed web UI with live-updating charts.
+Connect to any PostgreSQL instance — standalone or distributed — and get instant visibility into connections, queries, locks, replication, system resources, cluster health, and more through a modern dark-themed web UI with live-updating charts.
 
-![PG Dash Screenshot](docs/screenshot.jpeg)
+One binary, one dashboard, works everywhere: single-node PostgreSQL 14+, Apache Cloudberry, and Greenplum Database.
+
+![PG Dash — PostgreSQL](docs/screenshot.jpeg)
+
+![PG Dash — Cloudberry/Greenplum Cluster](docs/pg_dash_cbdb.png)
 
 ## Features
 
-- **Overview** — stat cards (connections, TPS, cache hit ratio, DB size, CPU, disk I/O) and real-time charts
-- **Activity Monitor** — live view of `pg_stat_activity` with filtering, query cancellation, and blocking chain visualization
-- **Databases** — per-database stats, sizes, cache hit ratios, and table drill-down
-- **Query Analysis** — top queries from `pg_stat_statements` by time, calls, rows, or temp usage with EXPLAIN support
+### Core (All Modes)
+
+- **Overview** — stat cards (connections, TPS, cache hit ratio, DB size, CPU, disk I/O), disk usage bars with PGDATA highlight, XID age monitoring, and real-time charts
+- **Activity Monitor** — live `pg_stat_activity` with filtering, sort, pause/resume auto-refresh, CSV export, query cancellation, and blocking chain visualization
+- **Databases & Tables** — per-database stats with automatic per-database connection pooling, table detail panel with Stats/Columns/DDL tabs, bloat estimation bars, and distribution policy display
+- **Query Analysis** — top queries from `pg_stat_statements` by time, calls, rows, or temp usage with EXPLAIN plan viewer
+- **Query History** — historical query tracking with duration, I/O stats, and filtering
 - **SQL Editor** — execute arbitrary SQL with results table, EXPLAIN visualization, and read-only mode
 - **System** — CPU, memory, disk, network, and PostgreSQL process monitoring via gopsutil
+- **Storage** — dedicated page for disk usage per mount point, database sizes chart, and PGDATA monitoring
 - **Replication** — replica lag, LSN positions, replication slots, and WAL stats
 - **Locks** — current locks, blocking chains as tree visualizations, one-click termination
 - **Vacuum** — autovacuum workers, vacuum progress, tables needing vacuum with one-click actions
 - **Server Config** — full `pg_settings` viewer grouped by category with optimization recommendations
-- **Alerts** — configurable rules engine with real-time notifications for connections, queries, replication lag, disk usage, etc.
+- **Recommendations** — automated health scan detecting bloat, missing indexes, vacuum debt, and config issues with actionable SQL fixes
+- **Alerts** — configurable rules engine with per-rule enable/disable, real-time notifications for connections, queries, replication lag, disk usage, etc.
 - **WebSocket** — all metrics broadcast every 2 seconds for truly live dashboards
 - **Historical Snapshots** — 5-minute snapshots stored locally with 7-day retention for time-range comparison
+
+### MPP Cluster Mode (Cloudberry / Greenplum)
+
+When connected to a distributed cluster, PG Dash auto-detects the MPP environment via `SELECT version()` and enables additional features:
+
+- **Cluster Dashboard** — segment topology table, cluster health summary (primaries/mirrors up/down, sync status, balance)
+- **Per-Host Metrics** — aggregate stats per segment host: segment counts, TPS, cache hit ratio, temp bytes
+- **Segment Replication** — WAL replication status per segment pair with write/flush/replay lag
+- **Resource Management** — resource queue status (limits vs usage, waiters/holders) or resource group status (running, queueing, executed, queue duration)
+- **Data Skew** — detect tables with skew coefficient > 5, with severity visualization
+- **Workfile/Spill Monitoring** — per-segment spill file usage
+- **Distribution Policy** — show table distribution keys in the table detail panel
+- **FTS History** — failover/recovery event history from `gp_configuration_history`
+- **Segment Config Diffs** — detect settings that differ across segments
+- **Per-Segment Charts** — TPS, cache hit ratio, and temp bytes per segment as bar charts
+
+> **Seamless compatibility**: The Cluster tab and all MPP-specific features only appear when connected to a distributed cluster. When connected to standalone PostgreSQL, the UI shows only standard PostgreSQL features — no cluster-related UI elements or errors.
 
 ## Architecture
 

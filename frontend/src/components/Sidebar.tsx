@@ -13,26 +13,47 @@ import {
   Bell,
   ChevronLeft,
   ChevronRight,
+  Network,
+  Stethoscope,
+  History,
+  HardDrive,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { cn } from '@/lib/utils';
+import { useMetrics } from '@/contexts/MetricsContext';
 
-const navItems = [
+const baseNavItems = [
   { to: '/', icon: LayoutDashboard, label: 'Overview' },
   { to: '/activity', icon: Activity, label: 'Activity Monitor' },
   { to: '/databases', icon: Database, label: 'Databases' },
   { to: '/queries', icon: BarChart3, label: 'Query Analysis' },
+  { to: '/history', icon: History, label: 'Query History' },
   { to: '/sql', icon: Terminal, label: 'SQL Editor' },
   { to: '/replication', icon: GitBranch, label: 'Replication' },
   { to: '/locks', icon: Lock, label: 'Locks' },
   { to: '/vacuum', icon: Trash2, label: 'Vacuum' },
   { to: '/system', icon: Cpu, label: 'System' },
+  { to: '/storage', icon: HardDrive, label: 'Storage' },
   { to: '/config', icon: Settings, label: 'Server Config' },
+  { to: '/recommendations', icon: Stethoscope, label: 'Recommendations' },
   { to: '/alerts', icon: Bell, label: 'Alerts' },
 ];
 
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
+  const { clusterInfo } = useMetrics();
+
+  const navItems = useMemo(() => {
+    if (clusterInfo && clusterInfo.mode !== 'postgresql') {
+      // Insert "Cluster" after "Overview"
+      return [
+        baseNavItems[0],
+        { to: '/cluster', icon: Network, label: 'Cluster' },
+        ...baseNavItems.slice(1),
+      ];
+    }
+    return baseNavItems;
+  }, [clusterInfo]);
 
   return (
     <aside

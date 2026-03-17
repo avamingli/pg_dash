@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { QueryResult } from '@/types/metrics';
+import PlanViewer from '@/components/PlanViewer';
 
 // ── types ──
 
@@ -224,12 +225,7 @@ export default function SQLEditor() {
             )}
 
             {explainResult && (
-              <div className="p-4">
-                <p className="text-xs text-zinc-500 mb-2">Execution Plan (EXPLAIN ANALYZE, BUFFERS, FORMAT JSON):</p>
-                <pre className="bg-zinc-900 border border-zinc-700 rounded p-3 text-xs text-zinc-300 whitespace-pre-wrap max-h-[400px] overflow-auto font-mono">
-                  {typeof explainResult === 'string' ? explainResult : JSON.stringify(explainResult as object, null, 2)}
-                </pre>
-              </div>
+              <PlanViewer plan={explainResult} />
             )}
 
             {result && (

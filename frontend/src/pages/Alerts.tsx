@@ -2,11 +2,12 @@ import { useEffect, useState, useMemo } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
-import { Bell, RefreshCw, AlertTriangle, Info, XCircle } from 'lucide-react';
+import { Bell, RefreshCw, AlertTriangle, Info, XCircle, Settings } from 'lucide-react';
 import { api } from '@/lib/api';
-import type { AlertEntry } from '@/types/metrics';
+import type { AlertEntry, AlertRule } from '@/types/metrics';
 
 type SeverityFilter = '' | 'info' | 'warning' | 'critical';
+type Tab = 'alerts' | 'rules';
 
 const SEVERITY_COLORS: Record<string, string> = {
   info: '#3b82f6',
@@ -26,7 +27,9 @@ const TT_STYLE = {
 };
 
 export default function Alerts() {
+  const [tab, setTab] = useState<Tab>('alerts');
   const [alerts, setAlerts] = useState<AlertEntry[]>([]);
+  const [rules, setRules] = useState<AlertRule[]>([]);
   const [filter, setFilter] = useState<SeverityFilter>('');
   const [showResolved, setShowResolved] = useState(true);
 
@@ -34,8 +37,18 @@ export default function Alerts() {
     api.getAlerts().then(setAlerts).catch(() => {});
   }
 
+  function fetchRules() {
+    api.getAlertRules().then(setRules).catch(() => {});
+  }
+
+  async function toggleRule(id: string, enabled: boolean) {
+    await api.setAlertRuleEnabled(id, enabled);
+    fetchRules();
+  }
+
   useEffect(() => {
     fetchAlerts();
+    fetchRules();
     const id = setInterval(fetchAlerts, 5000);
     return () => clearInterval(id);
   }, []);
@@ -77,18 +90,61 @@ export default function Alerts() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold">Alerts</h1>
-          <Bell size={20} className="text-zinc-500" />
-          {activeCount > 0 && (
-            <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-500/20 text-red-400">
-              {activeCount} active
-            </span>
-          )}
+          <div className="flex gap-1 ml-2">
+            <button onClick={() => setTab('alerts')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded transition-colors ${
+                tab === 'alerts' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+              }`}>
+              <Bell size={12} /> Alerts {activeCount > 0 && <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-red-500/30 text-red-400">{activeCount}</span>}
+            </button>
+            <button onClick={() => { setTab('rules'); fetchRules(); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded transition-colors ${
+                tab === 'rules' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+              }`}>
+              <Settings size={12} /> Rules
+            </button>
+          </div>
         </div>
-        <button onClick={fetchAlerts} className="flex items-center gap-1.5 text-sm text-zinc-400 hover:text-white">
+        <button onClick={tab === 'alerts' ? fetchAlerts : fetchRules} className="flex items-center gap-1.5 text-sm text-zinc-400 hover:text-white">
           <RefreshCw size={14} /> Refresh
         </button>
       </div>
 
+      {/* Rules tab */}
+      {tab === 'rules' && (
+        <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-zinc-800">
+            <h3 className="text-sm font-medium text-zinc-400">Alert Rules Configuration</h3>
+            <p className="text-xs text-zinc-600 mt-0.5">Enable or disable alert rules. Changes take effect immediately.</p>
+          </div>
+          <div className="divide-y divide-zinc-800">
+            {rules.map(rule => (
+              <div key={rule.id} className="flex items-center justify-between px-4 py-3">
+                <div>
+                  <p className="text-sm text-zinc-200 font-mono">{rule.name}</p>
+                  <p className="text-xs text-zinc-500 mt-0.5">Cooldown: {rule.cooldown}</p>
+                </div>
+                <button
+                  onClick={() => toggleRule(rule.id, !rule.enabled)}
+                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors ${
+                    rule.enabled ? 'bg-green-600' : 'bg-zinc-700'
+                  }`}
+                >
+                  <span className={`inline-block h-4 w-4 rounded-full bg-white transition-transform mt-0.5 ${
+                    rule.enabled ? 'translate-x-4 ml-0.5' : 'translate-x-0.5'
+                  }`} />
+                </button>
+              </div>
+            ))}
+            {rules.length === 0 && (
+              <div className="px-4 py-8 text-center text-sm text-zinc-500">No rules configured</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Alerts tab */}
+      {tab === 'alerts' && <>
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <SummaryCard label="Active" value={activeCount} color={activeCount > 0 ? 'text-red-400 bg-red-400/10' : 'text-zinc-400 bg-zinc-400/10'} />
@@ -175,6 +231,7 @@ export default function Alerts() {
           </div>
         )}
       </div>
+      </>}
     </div>
   );
 }

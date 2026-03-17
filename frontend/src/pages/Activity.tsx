@@ -5,10 +5,11 @@ import {
 } from 'recharts';
 import {
   Users, Activity as ActivityIcon, Clock, AlertTriangle, XCircle,
-  ChevronDown, ChevronRight, Search, RefreshCw,
+  ChevronDown, ChevronRight, Search, RefreshCw, Pause, Play, Download,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useMetrics } from '@/contexts/MetricsContext';
+import ExportButton from '@/components/ExportButton';
 import type { ActivityConnection, ActivitySummary } from '@/types/metrics';
 
 // ── colors ──
@@ -55,7 +56,7 @@ function computeDuration(queryStart: string | null): number | null {
   return (Date.now() - new Date(queryStart).getTime()) / 1000;
 }
 
-type SortKey = 'pid' | 'usename' | 'datname' | 'client_addr' | 'state' | 'duration' | 'backend_type' | 'wait_event';
+type SortKey = 'pid' | 'usename' | 'datname' | 'client_addr' | 'state' | 'duration' | 'backend_type' | 'application_name' | 'wait_event';
 type SortDir = 'asc' | 'desc';
 
 // ── component ──
@@ -80,6 +81,9 @@ export default function Activity() {
   // Expanded rows
   const [expandedPid, setExpandedPid] = useState<number | null>(null);
 
+  // Auto-refresh
+  const [paused, setPaused] = useState(false);
+
   // Confirmation dialogs
   const [confirmAction, setConfirmAction] = useState<{ pid: number; action: 'cancel' | 'terminate' } | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
@@ -94,9 +98,10 @@ export default function Activity() {
 
   useEffect(() => {
     fetchAll();
+    if (paused) return;
     const id = setInterval(fetchAll, 2000);
     return () => clearInterval(id);
-  }, [fetchAll]);
+  }, [fetchAll, paused]);
 
   // Unique values for filter dropdowns
   const uniqueStates = useMemo(() => [...new Set(connections.map(c => c.state).filter(Boolean))].sort(), [connections]);
@@ -175,9 +180,23 @@ export default function Activity() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Activity Monitor</h1>
-        <button onClick={fetchAll} className="flex items-center gap-1.5 text-sm text-zinc-400 hover:text-white transition-colors">
-          <RefreshCw size={14} /> Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setPaused(!paused)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded transition-colors ${
+              paused ? 'bg-green-600/20 text-green-400' : 'bg-zinc-800 text-zinc-400 hover:text-white'
+            }`}>
+            {paused ? <Play size={12} /> : <Pause size={12} />}
+            {paused ? 'Resume' : 'Pause'}
+          </button>
+          <ExportButton
+            data={filtered as unknown as Record<string, unknown>[]}
+            filename="activity.csv"
+            columns={['pid', 'usename', 'datname', 'client_addr', 'state', 'backend_type', 'application_name', 'wait_event_type', 'wait_event', 'query']}
+          />
+          <button onClick={fetchAll} className="flex items-center gap-1.5 text-sm text-zinc-400 hover:text-white transition-colors">
+            <RefreshCw size={14} /> Refresh
+          </button>
+        </div>
       </div>
 
       {/* ── Summary Panel ── */}
@@ -286,6 +305,7 @@ export default function Activity() {
                 <SortHeader label="Wait Event" sortKey="wait_event" current={sortKey} dir={sortDir} onClick={handleSort} />
                 <SortHeader label="Duration" sortKey="duration" current={sortKey} dir={sortDir} onClick={handleSort} />
                 <SortHeader label="Backend" sortKey="backend_type" current={sortKey} dir={sortDir} onClick={handleSort} />
+                <SortHeader label="App" sortKey="application_name" current={sortKey} dir={sortDir} onClick={handleSort} />
                 <th className="p-2">Query</th>
                 <th className="p-2 w-24">Actions</th>
               </tr>
@@ -307,7 +327,7 @@ export default function Activity() {
                 );
               })}
               {filtered.length === 0 && (
-                <tr><td colSpan={11} className="p-6 text-center text-zinc-500">No connections match filters</td></tr>
+                <tr><td colSpan={12} className="p-6 text-center text-zinc-500">No connections match filters</td></tr>
               )}
             </tbody>
           </table>
@@ -525,6 +545,7 @@ function ConnectionRow({ conn, duration, isExpanded, onToggle, onCancel, onTermi
           ) : '--'}
         </td>
         <td className="p-2 text-xs text-zinc-500">{conn.backend_type}</td>
+        <td className="p-2 text-xs text-zinc-500 truncate max-w-[120px]" title={conn.application_name}>{conn.application_name || '--'}</td>
         <td className="p-2 text-zinc-300 truncate max-w-[300px]" title={conn.query}>
           {conn.query ? conn.query.slice(0, 80) : '--'}
         </td>
@@ -553,7 +574,7 @@ function ConnectionRow({ conn, duration, isExpanded, onToggle, onCancel, onTermi
       </tr>
       {isExpanded && (
         <tr className="bg-zinc-800/40">
-          <td colSpan={11} className="p-4">
+          <td colSpan={12} className="p-4">
             <div className="space-y-3">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                 <div>

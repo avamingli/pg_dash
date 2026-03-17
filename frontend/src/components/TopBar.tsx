@@ -32,6 +32,10 @@ export default function TopBar() {
   // Format uptime from PG interval string
   const uptime = serverInfo?.uptime ?? '';
 
+  // Cluster info
+  const ci = serverInfo?.cluster_info;
+  const isDistributed = ci && ci.mode !== 'postgresql';
+
   // Connection counts from latest metrics
   const conns = latest?.pg?.connections;
 
@@ -57,6 +61,12 @@ export default function TopBar() {
           </span>
         )}
 
+        {isDistributed && (
+          <span className="text-xs font-medium px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 hidden sm:inline">
+            Cloudberry {ci.version} &middot; {ci.num_segments} segments
+          </span>
+        )}
+
         {uptime && (
           <span className="text-xs text-zinc-600 hidden md:inline">
             up {uptime}
@@ -64,10 +74,14 @@ export default function TopBar() {
         )}
       </div>
 
-      {/* Center: database name */}
+      {/* Center: connection info */}
       <div className="flex items-center gap-2 text-sm text-zinc-400">
         <Database size={14} className="text-zinc-500" />
-        <span>postgres</span>
+        <span>
+          {serverInfo
+            ? `${serverInfo.user ?? ''}@${serverInfo.host ?? 'localhost'}:${serverInfo.port ?? ''}`
+            : '--'}
+        </span>
       </div>
 
       {/* Right: alerts + connection gauge */}
