@@ -70,6 +70,32 @@ type executeRequest struct {
 	ReadOnly bool   `json:"read_only"`
 }
 
+// collectRows reads every row out of a pgx.Rows into a JSON-friendly shape.
+// The returned rows slice is always non-nil (even with zero rows) — a nil
+// slice marshals to JSON `null`, but the frontend always expects an array
+// (e.g. DDL statements return zero rows).
+func collectRows(rows pgx.Rows) (columns []string, resultRows []map[string]any, err error) {
+	fields := rows.FieldDescriptions()
+	columns = make([]string, len(fields))
+	for i, fd := range fields {
+		columns[i] = fd.Name
+	}
+
+	resultRows = make([]map[string]any, 0)
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			return nil, nil, err
+		}
+		row := make(map[string]any, len(columns))
+		for i, col := range columns {
+			row[col] = sanitizeValue(values[i])
+		}
+		resultRows = append(resultRows, row)
+	}
+	return columns, resultRows, rows.Err()
+}
+
 func executeQueryHandler(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req executeRequest
@@ -84,58 +110,47 @@ func executeQueryHandler(pool *pgxpool.Pool) http.HandlerFunc {
 
 		ctx := r.Context()
 
-		// Execute within a read-only transaction if requested
-		txOpts := pgx.TxOptions{}
+		var columns []string
+		var resultRows []map[string]any
+
 		if req.ReadOnly {
-			txOpts.AccessMode = pgx.ReadOnly
-		}
-
-		tx, err := pool.BeginTx(ctx, txOpts)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		defer tx.Rollback(ctx)
-
-		rows, err := tx.Query(ctx, req.SQL)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		defer rows.Close()
-
-		// Collect column names
-		fields := rows.FieldDescriptions()
-		columns := make([]string, len(fields))
-		for i, fd := range fields {
-			columns[i] = fd.Name
-		}
-
-		// Collect all rows. Must start as a non-nil empty slice, not a nil
-		// one — a nil slice marshals to JSON `null`, but the frontend always
-		// expects an array (e.g. DDL statements return zero rows).
-		resultRows := make([]map[string]any, 0)
-		for rows.Next() {
-			values, err := rows.Values()
+			// Wrap in an explicit read-only transaction, always rolled back,
+			// as a safety net against any statement that tries to write.
+			tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-			row := make(map[string]any, len(columns))
-			for i, col := range columns {
-				row[col] = sanitizeValue(values[i])
-			}
-			resultRows = append(resultRows, row)
-		}
-		if err := rows.Err(); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
+			defer tx.Rollback(ctx)
 
-		if req.ReadOnly {
+			rows, err := tx.Query(ctx, req.SQL)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			columns, resultRows, err = collectRows(rows)
+			rows.Close()
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 			tx.Rollback(ctx)
 		} else {
-			tx.Commit(ctx)
+			// Run directly against the pool — no explicit transaction. Some
+			// statements (CREATE DATABASE, VACUUM, CREATE INDEX CONCURRENTLY,
+			// ALTER SYSTEM, ...) refuse to run inside a transaction block at
+			// all, so wrapping every write in one would break them.
+			rows, err := pool.Query(ctx, req.SQL)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			columns, resultRows, err = collectRows(rows)
+			rows.Close()
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
 
 		writeJSON(w, map[string]interface{}{
