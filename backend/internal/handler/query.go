@@ -111,8 +111,10 @@ func executeQueryHandler(pool *pgxpool.Pool) http.HandlerFunc {
 			columns[i] = fd.Name
 		}
 
-		// Collect all rows
-		var resultRows []map[string]any
+		// Collect all rows. Must start as a non-nil empty slice, not a nil
+		// one — a nil slice marshals to JSON `null`, but the frontend always
+		// expects an array (e.g. DDL statements return zero rows).
+		resultRows := make([]map[string]any, 0)
 		for rows.Next() {
 			values, err := rows.Values()
 			if err != nil {
