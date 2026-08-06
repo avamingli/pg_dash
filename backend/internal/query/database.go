@@ -42,6 +42,49 @@ LEFT JOIN pg_stat_database s ON d.datname = s.datname
 WHERE d.datistemplate = false
 ORDER BY pg_database_size(d.datname) DESC`
 
+// DatabaseListLegacy is DatabaseList without session_time/active_time/
+// idle_in_transaction_time/sessions*, which pg_stat_database only gained in
+// PostgreSQL 14 — MPP forks (Cloudberry, Greenplum, WarehousePG) are
+// commonly based on PostgreSQL 12 and lack them.
+const DatabaseListLegacy = `
+SELECT
+    d.datname,
+    pg_database_size(d.datname) AS size,
+    COALESCE(s.numbackends, 0) AS numbackends,
+    COALESCE(s.xact_commit, 0) AS xact_commit,
+    COALESCE(s.xact_rollback, 0) AS xact_rollback,
+    COALESCE(s.blks_read, 0) AS blks_read,
+    COALESCE(s.blks_hit, 0) AS blks_hit,
+    COALESCE(s.tup_returned, 0) AS tup_returned,
+    COALESCE(s.tup_fetched, 0) AS tup_fetched,
+    COALESCE(s.tup_inserted, 0) AS tup_inserted,
+    COALESCE(s.tup_updated, 0) AS tup_updated,
+    COALESCE(s.tup_deleted, 0) AS tup_deleted,
+    COALESCE(s.conflicts, 0) AS conflicts,
+    COALESCE(s.temp_files, 0) AS temp_files,
+    COALESCE(s.temp_bytes, 0) AS temp_bytes,
+    COALESCE(s.deadlocks, 0) AS deadlocks,
+    COALESCE(s.blk_read_time, 0) AS blk_read_time,
+    COALESCE(s.blk_write_time, 0) AS blk_write_time,
+    CASE WHEN COALESCE(s.blks_hit, 0) + COALESCE(s.blks_read, 0) > 0
+         THEN round(
+             s.blks_hit::numeric /
+             (s.blks_hit + s.blks_read) * 100, 2)
+         ELSE 0
+    END AS cache_hit_ratio,
+    0 AS session_time,
+    0 AS active_time,
+    0 AS idle_in_transaction_time,
+    0 AS sessions,
+    0 AS sessions_abandoned,
+    0 AS sessions_fatal,
+    0 AS sessions_killed,
+    s.stats_reset
+FROM pg_database d
+LEFT JOIN pg_stat_database s ON d.datname = s.datname
+WHERE d.datistemplate = false
+ORDER BY pg_database_size(d.datname) DESC`
+
 // DatabaseSizes returns all non-template databases with their sizes,
 // sorted by size descending. Used for the overview total database size card.
 const DatabaseSizes = `

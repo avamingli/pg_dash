@@ -5,11 +5,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 
+	"github.com/avamingli/dbhouse-web/backend/internal/service"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// pgMajorVersion parses the numeric PostgreSQL major version out of a
+// ClusterInfo.PGVersion string like "12.12" or "16.4" (0 if unknown). MPP
+// forks (Cloudberry, Greenplum, WarehousePG) are commonly based on an older
+// PostgreSQL major version than the one running on the coordinator's own
+// binary would suggest, so callers use this to pick catalog-column-safe SQL.
+func pgMajorVersion(ci *service.ClusterInfo) int {
+	if ci == nil || ci.PGVersion == "" {
+		return 0
+	}
+	major := ci.PGVersion
+	if i := strings.IndexByte(major, '.'); i >= 0 {
+		major = major[:i]
+	}
+	n, _ := strconv.Atoi(major)
+	return n
+}
 
 // writeJSON encodes data as JSON and writes it to the response.
 func writeJSON(w http.ResponseWriter, data interface{}) {

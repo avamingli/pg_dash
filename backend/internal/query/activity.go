@@ -24,6 +24,30 @@ SELECT
 FROM pg_stat_activity
 ORDER BY backend_start`
 
+// ActiveConnectionsLegacy is ActiveConnections without query_id, which was
+// only added to pg_stat_activity in PostgreSQL 14 — MPP forks (Cloudberry,
+// Greenplum, WarehousePG) are commonly based on PostgreSQL 12 and lack it.
+const ActiveConnectionsLegacy = `
+SELECT
+    pid,
+    COALESCE(usename, '') AS usename,
+    COALESCE(datname, '') AS datname,
+    COALESCE(host(client_addr)::text, '') AS client_addr,
+    COALESCE(client_port, 0) AS client_port,
+    backend_start,
+    xact_start,
+    query_start,
+    state_change,
+    COALESCE(wait_event_type, '') AS wait_event_type,
+    COALESCE(wait_event, '') AS wait_event,
+    COALESCE(state, '') AS state,
+    COALESCE(backend_type, '') AS backend_type,
+    COALESCE(application_name, '') AS application_name,
+    0 AS query_id,
+    COALESCE(query, '') AS query
+FROM pg_stat_activity
+ORDER BY backend_start`
+
 // ConnectionCountsByState returns connection counts grouped by state.
 // Useful for the summary bar chart showing active/idle/idle-in-transaction.
 const ConnectionCountsByState = `

@@ -6,12 +6,13 @@ import (
 	"strconv"
 
 	"github.com/avamingli/dbhouse-web/backend/internal/query"
+	"github.com/avamingli/dbhouse-web/backend/internal/service"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func RegisterActivityRoutes(r chi.Router, pool *pgxpool.Pool) {
-	r.Get("/activity", activityListHandler(pool))
+func RegisterActivityRoutes(r chi.Router, pool *pgxpool.Pool, connMgr *service.ConnectionManager) {
+	r.Get("/activity", activityListHandler(pool, connMgr))
 	r.Get("/activity/summary", activitySummaryHandler(pool))
 	r.Get("/activity/long-running", longRunningHandler(pool))
 	r.Get("/activity/blocked", blockedHandler(pool))
@@ -19,9 +20,13 @@ func RegisterActivityRoutes(r chi.Router, pool *pgxpool.Pool) {
 	r.Post("/activity/{pid}/terminate", terminateBackendHandler(pool))
 }
 
-func activityListHandler(pool *pgxpool.Pool) http.HandlerFunc {
+func activityListHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rows, err := queryRows(r.Context(), pool, query.ActiveConnections)
+		sql := query.ActiveConnections
+		if pgMajorVersion(connMgr.GetClusterInfo()) < 14 {
+			sql = query.ActiveConnectionsLegacy
+		}
+		rows, err := queryRows(r.Context(), pool, sql)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return

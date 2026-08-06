@@ -10,7 +10,7 @@ import (
 )
 
 func RegisterDatabaseRoutes(r chi.Router, pool *pgxpool.Pool, connMgr *service.ConnectionManager) {
-	r.Get("/databases", databaseListHandler(pool))
+	r.Get("/databases", databaseListHandler(pool, connMgr))
 	r.Get("/databases/{name}/tables", databaseTablesHandler(connMgr))
 	r.Get("/databases/{name}/tables/{table}/io", tableIOHandler(connMgr))
 	r.Get("/databases/{name}/tables/{table}/columns", tableColumnsHandler(connMgr))
@@ -19,9 +19,13 @@ func RegisterDatabaseRoutes(r chi.Router, pool *pgxpool.Pool, connMgr *service.C
 	r.Get("/databases/{name}/indexes", databaseIndexesHandler(connMgr))
 }
 
-func databaseListHandler(pool *pgxpool.Pool) http.HandlerFunc {
+func databaseListHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rows, err := queryRows(r.Context(), pool, query.DatabaseList)
+		sql := query.DatabaseList
+		if pgMajorVersion(connMgr.GetClusterInfo()) < 14 {
+			sql = query.DatabaseListLegacy
+		}
+		rows, err := queryRows(r.Context(), pool, sql)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
