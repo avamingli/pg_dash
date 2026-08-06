@@ -18,12 +18,13 @@ vi.mock('@/contexts/MetricsContext', () => ({
 }));
 
 // Mock api
+const getServerInfo = vi.fn().mockResolvedValue({
+  version: 'PostgreSQL 19devel on x86_64',
+  uptime: '2 days',
+});
 vi.mock('@/lib/api', () => ({
   api: {
-    getServerInfo: vi.fn().mockResolvedValue({
-      version: 'PostgreSQL 19devel on x86_64',
-      uptime: '2 days',
-    }),
+    getServerInfo: (...args: unknown[]) => getServerInfo(...args),
     getAlertCount: vi.fn().mockResolvedValue({ count: 3 }),
   },
 }));
@@ -51,5 +52,24 @@ describe('TopBar', () => {
   it('renders database name', () => {
     renderTopBar();
     expect(screen.getByText('postgres')).toBeInTheDocument();
+  });
+
+  it('labels a WarehousePG cluster by product name, not "Cloudberry"', async () => {
+    getServerInfo.mockResolvedValueOnce({
+      version: 'PostgreSQL 19devel on x86_64',
+      uptime: '2 days',
+      cluster_info: {
+        mode: 'warehousepg',
+        product_name: 'WarehousePG',
+        version: '7.0.0-beta.0',
+        pg_version: '12.12',
+        num_segments: 3,
+        has_mirrors: false,
+        resource_mgr: 'none',
+      },
+    });
+    renderTopBar();
+    expect(await screen.findByText(/WarehousePG 7\.0\.0-beta\.0/)).toBeInTheDocument();
+    expect(screen.queryByText(/^Cloudberry/)).not.toBeInTheDocument();
   });
 });

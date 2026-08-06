@@ -139,3 +139,66 @@ func TestCloseAndStatus(t *testing.T) {
 		t.Errorf("expected disconnected after close, got %q", cm.Status())
 	}
 }
+
+func TestClassifyVersionString(t *testing.T) {
+	tests := []struct {
+		name        string
+		version     string
+		wantMode    ClusterMode
+		wantProduct string
+		wantVersion string
+		wantPGVer   string
+	}{
+		{
+			name:        "plain PostgreSQL",
+			version:     "PostgreSQL 16.4 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 13.2.1, 64-bit",
+			wantMode:    ModePostgreSQL,
+			wantProduct: "PostgreSQL",
+			wantVersion: "",
+			wantPGVer:   "16.4",
+		},
+		{
+			name:        "Apache Cloudberry",
+			version:     "PostgreSQL 14.4 (Apache Cloudberry 2.0.0-devel build dev) on x86_64-pc-linux-gnu, compiled by gcc (GCC) 11.5.0, 64-bit",
+			wantMode:    ModeCloudberry,
+			wantProduct: "Apache Cloudberry",
+			wantVersion: "2.0.0-devel",
+			wantPGVer:   "14.4",
+		},
+		{
+			name:        "Greenplum Database",
+			version:     "PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on x86_64-pc-linux-gnu, compiled by gcc (GCC) 11.5.0, 64-bit",
+			wantMode:    ModeCloudberry,
+			wantProduct: "Greenplum Database",
+			wantVersion: "7.0.0-beta.0",
+			wantPGVer:   "12.12",
+		},
+		{
+			// Captured live from a running WarehousePG dev cluster (whpg-dev-1, PGPORT 7000).
+			name:        "WarehousePG",
+			version:     "PostgreSQL 12.12 (Greenplum Database 7.0.0-beta.0 build dev) on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14), 64-bit compiled on Jul 13 2026 13:16:41 (with assert checking) Bhuvnesh C. WarehousePG",
+			wantMode:    ModeWarehousePG,
+			wantProduct: "WarehousePG",
+			wantVersion: "7.0.0-beta.0",
+			wantPGVer:   "12.12",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ci := classifyVersionString(tt.version)
+			if ci.Mode != tt.wantMode {
+				t.Errorf("Mode = %q, want %q", ci.Mode, tt.wantMode)
+			}
+			if ci.ProductName != tt.wantProduct {
+				t.Errorf("ProductName = %q, want %q", ci.ProductName, tt.wantProduct)
+			}
+			if ci.Version != tt.wantVersion {
+				t.Errorf("Version = %q, want %q", ci.Version, tt.wantVersion)
+			}
+			if ci.PGVersion != tt.wantPGVer {
+				t.Errorf("PGVersion = %q, want %q", ci.PGVersion, tt.wantPGVer)
+			}
+		})
+	}
+}

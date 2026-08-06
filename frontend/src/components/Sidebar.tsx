@@ -21,6 +21,7 @@ import {
 import { useState, useMemo } from 'react';
 import { cn } from '@/lib/utils';
 import { useMetrics } from '@/contexts/MetricsContext';
+import warehousePgIcon from '@/assets/warehousepg-icon.png';
 
 const baseNavItems = [
   { to: '/', icon: LayoutDashboard, label: 'Overview' },
@@ -64,9 +65,16 @@ export default function Sidebar() {
     >
       <div className="flex items-center justify-between p-4 border-b border-zinc-800">
         {!collapsed && (
-          <span className="text-lg font-bold" style={{ color: 'var(--pg-blue-light)' }}>
-            PG Dash
-          </span>
+          clusterInfo?.mode === 'warehousepg' ? (
+            <div className="flex items-center gap-2">
+              <img src={warehousePgIcon} alt="" className="h-6 w-6" />
+              <span className="text-lg font-bold text-white">WarehousePG</span>
+            </div>
+          ) : (
+            <span className="text-lg font-bold" style={{ color: 'var(--pg-blue-light)' }}>
+              PG Dash
+            </span>
+          )
         )}
         <button
           onClick={() => setCollapsed(!collapsed)}

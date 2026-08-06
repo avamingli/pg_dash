@@ -71,6 +71,21 @@ export function MetricsProvider({ children }: MetricsProviderProps) {
       .catch(() => {});
   }, []);
 
+  // Rebrand the browser tab when connected to a WarehousePG cluster.
+  useEffect(() => {
+    if (clusterInfo?.mode !== 'warehousepg') return;
+
+    document.title = 'WarehousePG Dashboard';
+
+    let icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (!icon) {
+      icon = document.createElement('link');
+      icon.rel = 'icon';
+      document.head.appendChild(icon);
+    }
+    icon.href = '/warehousepg-icon.png';
+  }, [clusterInfo]);
+
   return (
     <MetricsContext.Provider value={{ latest, history, connected, send, clusterInfo }}>
       {children}

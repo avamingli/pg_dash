@@ -15,13 +15,15 @@ import (
 type ClusterMode string
 
 const (
-	ModePostgreSQL ClusterMode = "postgresql"
-	ModeCloudberry ClusterMode = "cloudberry"
+	ModePostgreSQL  ClusterMode = "postgresql"
+	ModeCloudberry  ClusterMode = "cloudberry"
+	ModeWarehousePG ClusterMode = "warehousepg"
 )
 
 // ClusterInfo holds detected distributed cluster metadata.
 type ClusterInfo struct {
 	Mode        ClusterMode `json:"mode"`
+	ProductName string      `json:"product_name"` // e.g. "PostgreSQL", "Apache Cloudberry", "WarehousePG"
 	Version     string      `json:"version"`      // e.g. "3.0.0-devel"
 	PGVersion   string      `json:"pg_version"`    // e.g. "14.4"
 	NumSegments int         `json:"num_segments"`  // primary segments (excl coordinator)
@@ -29,9 +31,10 @@ type ClusterInfo struct {
 	ResourceMgr string     `json:"resource_mgr"`  // "queue" or "group"
 }
 
-// IsDistributed returns true if the cluster is a distributed database (Cloudberry/CBDB).
+// IsDistributed returns true if the cluster is a distributed database
+// (Cloudberry/CBDB or a downstream fork such as WarehousePG).
 func (ci *ClusterInfo) IsDistributed() bool {
-	return ci.Mode == ModeCloudberry
+	return ci.Mode == ModeCloudberry || ci.Mode == ModeWarehousePG
 }
 
 type ConnectionStatus string
@@ -124,24 +127,8 @@ func (cm *ConnectionManager) GetClusterInfo() *ClusterInfo {
 }
 
 func (cm *ConnectionManager) detectClusterMode(ctx context.Context, version string) *ClusterInfo {
-	ci := &ClusterInfo{Mode: ModePostgreSQL}
-
-	// Extract PG version: "PostgreSQL 14.4 ..."
-	if idx := strings.Index(version, "PostgreSQL "); idx >= 0 {
-		rest := version[idx+len("PostgreSQL "):]
-		if sp := strings.IndexAny(rest, " ("); sp > 0 {
-			ci.PGVersion = rest[:sp]
-		}
-	}
-
-	// Detect Cloudberry / Greenplum (both map to ModeCloudberry)
-	if strings.Contains(version, "Apache Cloudberry") {
-		ci.Mode = ModeCloudberry
-		ci.Version = extractParenVersion(version, "Apache Cloudberry")
-	} else if strings.Contains(version, "Greenplum Database") {
-		ci.Mode = ModeCloudberry
-		ci.Version = extractParenVersion(version, "Greenplum Database")
-	} else {
+	ci := classifyVersionString(version)
+	if !ci.IsDistributed() {
 		return ci // plain PostgreSQL
 	}
 
@@ -167,6 +154,46 @@ func (cm *ConnectionManager) detectClusterMode(ctx context.Context, version stri
 		log.Warn().Err(err).Msg("detectClusterMode: failed to query gp_resource_manager")
 	} else {
 		ci.ResourceMgr = resMgr
+	}
+
+	return ci
+}
+
+// classifyVersionString parses a raw `SELECT version()` string into a ClusterInfo
+// with Mode/ProductName/Version/PGVersion set. It does not touch the database, so
+// it can classify a cluster before (or without) issuing any distribution-topology
+// queries. Callers still need to fill in NumSegments/HasMirrors/ResourceMgr.
+func classifyVersionString(version string) *ClusterInfo {
+	ci := &ClusterInfo{Mode: ModePostgreSQL, ProductName: "PostgreSQL"}
+
+	// Extract PG version: "PostgreSQL 14.4 ..."
+	if idx := strings.Index(version, "PostgreSQL "); idx >= 0 {
+		rest := version[idx+len("PostgreSQL "):]
+		if sp := strings.IndexAny(rest, " ("); sp > 0 {
+			ci.PGVersion = rest[:sp]
+		}
+	}
+
+	// Detect Cloudberry / Greenplum (both map to ModeCloudberry)
+	if strings.Contains(version, "Apache Cloudberry") {
+		ci.Mode = ModeCloudberry
+		ci.ProductName = "Apache Cloudberry"
+		ci.Version = extractParenVersion(version, "Apache Cloudberry")
+	} else if strings.Contains(version, "Greenplum Database") {
+		ci.Mode = ModeCloudberry
+		ci.ProductName = "Greenplum Database"
+		ci.Version = extractParenVersion(version, "Greenplum Database")
+	} else {
+		return ci // plain PostgreSQL
+	}
+
+	// WarehousePG is a downstream fork that still reports "Greenplum Database"
+	// in its parenthetical PG-compat segment but appends its own name at the
+	// end of the string (see warehouse-pg's src/backend/utils/adt/version.c) —
+	// override the generic Greenplum/Cloudberry classification above.
+	if strings.Contains(version, "WarehousePG") {
+		ci.Mode = ModeWarehousePG
+		ci.ProductName = "WarehousePG"
 	}
 
 	return ci

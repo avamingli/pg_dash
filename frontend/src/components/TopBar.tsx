@@ -63,7 +63,7 @@ export default function TopBar() {
 
         {isDistributed && (
           <span className="text-xs font-medium px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 hidden sm:inline">
-            Cloudberry {ci.version} &middot; {ci.num_segments} segments
+            {ci.product_name} {ci.version} &middot; {ci.num_segments} segments
           </span>
         )}
 

@@ -45,7 +45,8 @@ export interface HourlyLogCount {
 // ── Distributed Cluster (Cloudberry / CBDB) ──
 
 export interface ClusterInfo {
-  mode: 'postgresql' | 'cloudberry';
+  mode: 'postgresql' | 'cloudberry' | 'warehousepg';
+  product_name: string;
   version: string;
   pg_version: string;
   num_segments: number;

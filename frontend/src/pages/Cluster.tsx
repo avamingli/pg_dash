@@ -68,7 +68,7 @@ export default function Cluster() {
     );
   }
 
-  const modeName = 'Apache Cloudberry';
+  const modeName = clusterInfo.product_name;
 
   // Per-segment TPS chart data
   const segTpsData = segStats
