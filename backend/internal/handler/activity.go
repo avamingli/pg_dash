@@ -22,9 +22,9 @@ func RegisterActivityRoutes(r chi.Router, pool *pgxpool.Pool, connMgr *service.C
 
 func activityListHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sql := query.ActiveConnections
-		if pgMajorVersion(connMgr.GetClusterInfo()) < 14 {
-			sql = query.ActiveConnectionsLegacy
+		sql := query.ActiveConnectionsLegacy
+		if connMgr.GetCapabilities().ActivityQueryID {
+			sql = query.ActiveConnections
 		}
 		rows, err := queryRows(r.Context(), pool, sql)
 		if err != nil {

@@ -51,9 +51,10 @@ type ConnectionManager struct {
 	mu     sync.RWMutex
 	status ConnectionStatus
 	// Cached server info from initial connection
-	version     string
-	startTime   time.Time
-	clusterInfo *ClusterInfo
+	version      string
+	startTime    time.Time
+	clusterInfo  *ClusterInfo
+	capabilities *Capabilities
 	// Per-database pool cache (key = database name)
 	dbPools map[string]*pgxpool.Pool
 	dbMu    sync.RWMutex
@@ -116,6 +117,16 @@ func (cm *ConnectionManager) TestConnection(ctx context.Context) (string, error)
 	cm.clusterInfo = ci
 	cm.mu.Unlock()
 
+	// Probe which version/fork-sensitive catalog columns actually exist.
+	caps, err := detectCapabilities(ctx, cm.pool)
+	if err != nil {
+		log.Warn().Err(err).Msg("TestConnection: failed to detect server capabilities")
+		caps = &Capabilities{}
+	}
+	cm.mu.Lock()
+	cm.capabilities = caps
+	cm.mu.Unlock()
+
 	return version, nil
 }
 
@@ -124,6 +135,14 @@ func (cm *ConnectionManager) GetClusterInfo() *ClusterInfo {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	return cm.clusterInfo
+}
+
+// GetCapabilities returns the detected server capabilities (never nil after
+// TestConnection has run; a zero-value Capabilities if detection failed).
+func (cm *ConnectionManager) GetCapabilities() *Capabilities {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return cm.capabilities
 }
 
 func (cm *ConnectionManager) detectClusterMode(ctx context.Context, version string) *ClusterInfo {

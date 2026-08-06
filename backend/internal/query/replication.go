@@ -41,6 +41,26 @@ SELECT
 FROM pg_replication_slots
 ORDER BY slot_name`
 
+// ReplicationSlotsLegacy is ReplicationSlots without inactive_since, which
+// pg_replication_slots only gained in PostgreSQL 17 — MPP forks (Cloudberry,
+// Greenplum, WarehousePG) are commonly based on an older PostgreSQL major
+// version and lack it.
+const ReplicationSlotsLegacy = `
+SELECT
+    slot_name,
+    COALESCE(slot_type, '') AS slot_type,
+    COALESCE(database, '') AS database,
+    temporary,
+    active,
+    COALESCE(active_pid, 0) AS active_pid,
+    COALESCE(restart_lsn::text, '') AS restart_lsn,
+    COALESCE(confirmed_flush_lsn::text, '') AS confirmed_flush_lsn,
+    COALESCE(wal_status, '') AS wal_status,
+    COALESCE(safe_wal_size, 0) AS safe_wal_size,
+    '' AS inactive_since
+FROM pg_replication_slots
+ORDER BY slot_name`
+
 // WALStats returns WAL generation statistics from pg_stat_wal.
 // Available in PG 14+. PG 19 columns: wal_records, wal_fpi, wal_bytes,
 // wal_fpi_bytes, wal_buffers_full, stats_reset.
@@ -50,6 +70,17 @@ SELECT
     wal_fpi,
     wal_bytes,
     wal_fpi_bytes,
+    wal_buffers_full,
+    stats_reset
+FROM pg_stat_wal`
+
+// WALStatsWarehousePG is WALStats for forks whose pg_stat_wal backport
+// renamed wal_fpi to wal_fpw (WarehousePG) and never added wal_fpi_bytes.
+const WALStatsWarehousePG = `
+SELECT
+    wal_records,
+    wal_fpw AS wal_fpi,
+    wal_bytes,
     wal_buffers_full,
     stats_reset
 FROM pg_stat_wal`

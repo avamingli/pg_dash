@@ -31,6 +31,26 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// hasColumn reports whether the given pg_catalog view/column exists on the
+// live test server — used to skip *Legacy/*WarehousePG variants that only
+// apply to servers older/newer than, or forked from, whatever this test is
+// actually running against.
+func hasColumn(t *testing.T, table, column string) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var exists bool
+	err := testPool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'pg_catalog' AND table_name = $1 AND column_name = $2
+		)`, table, column).Scan(&exists)
+	if err != nil {
+		t.Fatalf("hasColumn(%s, %s) failed: %v", table, column, err)
+	}
+	return exists
+}
+
 func queryOK(t *testing.T, sql string, args ...interface{}) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -87,7 +107,14 @@ func TestMaxConnections(t *testing.T) {
 // --- activity.go ---
 
 func TestActiveConnections(t *testing.T) {
+	if !hasColumn(t, "pg_stat_activity", "query_id") {
+		t.Skip("server lacks pg_stat_activity.query_id (PG 14+)")
+	}
 	queryOK(t, ActiveConnections)
+}
+
+func TestActiveConnectionsLegacy(t *testing.T) {
+	queryOK(t, ActiveConnectionsLegacy)
 }
 
 func TestConnectionCountsByState(t *testing.T) {
@@ -140,7 +167,14 @@ func TestTerminateBackend(t *testing.T) {
 // --- database.go ---
 
 func TestDatabaseList(t *testing.T) {
+	if !hasColumn(t, "pg_stat_database", "session_time") {
+		t.Skip("server lacks pg_stat_database.session_time (PG 14+)")
+	}
 	queryOK(t, DatabaseList)
+}
+
+func TestDatabaseListLegacy(t *testing.T) {
+	queryOK(t, DatabaseListLegacy)
 }
 
 func TestDatabaseSizes(t *testing.T) {
@@ -162,7 +196,14 @@ func TestDatabaseCacheHitRatio(t *testing.T) {
 // --- table.go ---
 
 func TestTableList(t *testing.T) {
+	if !hasColumn(t, "pg_stat_user_tables", "n_ins_since_vacuum") {
+		t.Skip("server lacks pg_stat_user_tables.n_ins_since_vacuum (PG 13+)")
+	}
 	queryOK(t, TableList, "%")
+}
+
+func TestTableListLegacy(t *testing.T) {
+	queryOK(t, TableListLegacy, "%")
 }
 
 func TestTableBloat(t *testing.T) {
@@ -225,11 +266,28 @@ func TestReplicationStatus(t *testing.T) {
 }
 
 func TestReplicationSlots(t *testing.T) {
+	if !hasColumn(t, "pg_replication_slots", "inactive_since") {
+		t.Skip("server lacks pg_replication_slots.inactive_since (PG 17+)")
+	}
 	queryOK(t, ReplicationSlots)
 }
 
+func TestReplicationSlotsLegacy(t *testing.T) {
+	queryOK(t, ReplicationSlotsLegacy)
+}
+
 func TestWALStats(t *testing.T) {
+	if !hasColumn(t, "pg_stat_wal", "wal_fpi") {
+		t.Skip("server's pg_stat_wal doesn't use the upstream wal_fpi naming")
+	}
 	queryOK(t, WALStats)
+}
+
+func TestWALStatsWarehousePG(t *testing.T) {
+	if !hasColumn(t, "pg_stat_wal", "wal_fpw") {
+		t.Skip("server's pg_stat_wal doesn't use WarehousePG's wal_fpw naming")
+	}
+	queryOK(t, WALStatsWarehousePG)
 }
 
 func TestCurrentWALLSN(t *testing.T) {
@@ -302,7 +360,17 @@ func TestTopQuerysByTemp(t *testing.T) {
 // --- vacuum.go ---
 
 func TestVacuumProgress(t *testing.T) {
+	if !hasColumn(t, "pg_stat_progress_vacuum", "max_dead_tuple_bytes") {
+		t.Skip("server lacks pg_stat_progress_vacuum's byte-based columns (PG 17+)")
+	}
 	queryOK(t, VacuumProgress)
+}
+
+func TestVacuumProgressLegacy(t *testing.T) {
+	if !hasColumn(t, "pg_stat_progress_vacuum", "max_dead_tuples") {
+		t.Skip("server uses PG 17+ byte-based pg_stat_progress_vacuum columns")
+	}
+	queryOK(t, VacuumProgressLegacy)
 }
 
 func TestAutovacuumWorkers(t *testing.T) {
@@ -310,7 +378,14 @@ func TestAutovacuumWorkers(t *testing.T) {
 }
 
 func TestTablesNeedingVacuum(t *testing.T) {
+	if !hasColumn(t, "pg_stat_user_tables", "n_ins_since_vacuum") {
+		t.Skip("server lacks pg_stat_user_tables.n_ins_since_vacuum (PG 13+)")
+	}
 	queryOK(t, TablesNeedingVacuum)
+}
+
+func TestTablesNeedingVacuumLegacy(t *testing.T) {
+	queryOK(t, TablesNeedingVacuumLegacy)
 }
 
 func TestAutovacuumSettings(t *testing.T) {
@@ -320,7 +395,17 @@ func TestAutovacuumSettings(t *testing.T) {
 // --- checkpoint.go ---
 
 func TestCheckpointStats(t *testing.T) {
+	if !hasColumn(t, "pg_stat_checkpointer", "num_timed") {
+		t.Skip("server lacks the pg_stat_checkpointer view (PG 17+)")
+	}
 	queryOK(t, CheckpointStats)
+}
+
+func TestCheckpointStatsLegacy(t *testing.T) {
+	if !hasColumn(t, "pg_stat_bgwriter", "checkpoints_timed") {
+		t.Skip("server moved checkpoint columns to pg_stat_checkpointer (PG 17+)")
+	}
+	queryOK(t, CheckpointStatsLegacy)
 }
 
 func TestBGWriterStats(t *testing.T) {

@@ -21,9 +21,9 @@ func RegisterDatabaseRoutes(r chi.Router, pool *pgxpool.Pool, connMgr *service.C
 
 func databaseListHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sql := query.DatabaseList
-		if pgMajorVersion(connMgr.GetClusterInfo()) < 14 {
-			sql = query.DatabaseListLegacy
+		sql := query.DatabaseListLegacy
+		if connMgr.GetCapabilities().DatabaseSessionStats {
+			sql = query.DatabaseList
 		}
 		rows, err := queryRows(r.Context(), pool, sql)
 		if err != nil {
@@ -46,7 +46,11 @@ func databaseTablesHandler(connMgr *service.ConnectionManager) http.HandlerFunc 
 		if schema == "" {
 			schema = "%"
 		}
-		rows, err := queryRows(r.Context(), dbPool, query.TableList, schema)
+		sql := query.TableListLegacy
+		if connMgr.GetCapabilities().TableInsertsSinceVacuum {
+			sql = query.TableList
+		}
+		rows, err := queryRows(r.Context(), dbPool, sql, schema)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return

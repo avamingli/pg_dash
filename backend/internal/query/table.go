@@ -41,6 +41,46 @@ FROM pg_stat_user_tables s
 WHERE s.schemaname LIKE $1
 ORDER BY pg_total_relation_size(s.relid) DESC`
 
+// TableListLegacy is TableList without n_ins_since_vacuum, which
+// pg_stat_user_tables only gained in PostgreSQL 13 — MPP forks (Cloudberry,
+// Greenplum, WarehousePG) are commonly based on PostgreSQL 12 and lack it.
+const TableListLegacy = `
+SELECT
+    s.schemaname,
+    s.relname,
+    pg_total_relation_size(s.relid) AS total_size,
+    pg_relation_size(s.relid) AS table_size,
+    pg_indexes_size(s.relid) AS index_size,
+    s.n_live_tup,
+    s.n_dead_tup,
+    CASE WHEN s.n_live_tup + s.n_dead_tup > 0
+         THEN round(
+             s.n_dead_tup::numeric /
+             (s.n_live_tup + s.n_dead_tup) * 100, 2)
+         ELSE 0
+    END AS dead_tuple_ratio,
+    s.seq_scan,
+    s.seq_tup_read,
+    COALESCE(s.idx_scan, 0) AS idx_scan,
+    COALESCE(s.idx_tup_fetch, 0) AS idx_tup_fetch,
+    s.n_tup_ins,
+    s.n_tup_upd,
+    s.n_tup_del,
+    s.n_tup_hot_upd,
+    s.n_mod_since_analyze,
+    0 AS n_ins_since_vacuum,
+    s.last_vacuum,
+    s.last_autovacuum,
+    s.last_analyze,
+    s.last_autoanalyze,
+    s.vacuum_count,
+    s.autovacuum_count,
+    s.analyze_count,
+    s.autoanalyze_count
+FROM pg_stat_user_tables s
+WHERE s.schemaname LIKE $1
+ORDER BY pg_total_relation_size(s.relid) DESC`
+
 // TableBloat estimates table bloat using a statistical method.
 // Returns estimated wasted bytes per table. This uses the same algorithm
 // as pgstattuple but without requiring the extension — it estimates from

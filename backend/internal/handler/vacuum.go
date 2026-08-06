@@ -5,22 +5,27 @@ import (
 	"net/http"
 
 	"github.com/avamingli/dbhouse-web/backend/internal/query"
+	"github.com/avamingli/dbhouse-web/backend/internal/service"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func RegisterVacuumRoutes(r chi.Router, pool *pgxpool.Pool) {
-	r.Get("/vacuum/progress", vacuumProgressHandler(pool))
+func RegisterVacuumRoutes(r chi.Router, pool *pgxpool.Pool, connMgr *service.ConnectionManager) {
+	r.Get("/vacuum/progress", vacuumProgressHandler(pool, connMgr))
 	r.Get("/vacuum/workers", vacuumWorkersHandler(pool))
-	r.Get("/vacuum/needed", vacuumNeededHandler(pool))
+	r.Get("/vacuum/needed", vacuumNeededHandler(pool, connMgr))
 	r.Post("/vacuum/{schema}/{table}", triggerVacuumHandler(pool))
 	r.Post("/vacuum/{schema}/{table}/analyze", triggerAnalyzeHandler(pool))
 }
 
-func vacuumProgressHandler(pool *pgxpool.Pool) http.HandlerFunc {
+func vacuumProgressHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rows, err := queryRows(r.Context(), pool, query.VacuumProgress)
+		sql := query.VacuumProgressLegacy
+		if connMgr.GetCapabilities().VacuumProgressByteCols {
+			sql = query.VacuumProgress
+		}
+		rows, err := queryRows(r.Context(), pool, sql)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -40,12 +45,16 @@ func vacuumWorkersHandler(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-func vacuumNeededHandler(pool *pgxpool.Pool) http.HandlerFunc {
+func vacuumNeededHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		result := make(map[string]interface{})
 
-		tables, err := queryRows(ctx, pool, query.TablesNeedingVacuum)
+		sql := query.TablesNeedingVacuumLegacy
+		if connMgr.GetCapabilities().TableInsertsSinceVacuum {
+			sql = query.TablesNeedingVacuum
+		}
+		tables, err := queryRows(ctx, pool, sql)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
