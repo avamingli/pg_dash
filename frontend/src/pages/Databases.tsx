@@ -28,6 +28,7 @@ function deadTupleColor(pct: number): string {
 
 export default function Databases() {
   const [databases, setDatabases] = useState<DatabaseStats[]>([]);
+  const [databasesLoading, setDatabasesLoading] = useState(true);
   const [selectedDb, setSelectedDb] = useState<string | null>(null);
   const [tables, setTables] = useState<TableRow[]>([]);
   const [tablesLoading, setTablesLoading] = useState(false);
@@ -46,7 +47,7 @@ export default function Databases() {
 
   // Fetch databases
   useEffect(() => {
-    const fetch = () => api.getDatabases().then(setDatabases).catch(() => {});
+    const fetch = () => api.getDatabases().then(setDatabases).catch(() => {}).finally(() => setDatabasesLoading(false));
     fetch();
     const id = setInterval(fetch, 10_000);
     return () => clearInterval(id);
@@ -194,7 +195,11 @@ export default function Databases() {
             </button>
           ))}
           {databases.length === 0 && (
-            <p className="text-sm text-zinc-500 col-span-full">Loading databases...</p>
+            <p className="text-sm text-zinc-500 col-span-full">
+              {databasesLoading
+                ? 'Loading databases...'
+                : 'No non-template databases found.'}
+            </p>
           )}
         </div>
       </div>
