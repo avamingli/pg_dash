@@ -8,15 +8,16 @@ import (
 	"strings"
 
 	"github.com/avamingli/dbhouse-web/backend/internal/query"
+	"github.com/avamingli/dbhouse-web/backend/internal/service"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func RegisterQueryRoutes(r chi.Router, pool *pgxpool.Pool) {
+func RegisterQueryRoutes(r chi.Router, pool *pgxpool.Pool, connMgr *service.ConnectionManager) {
 	r.Get("/queries/top", topQueriesHandler(pool))
-	r.Post("/query/execute", executeQueryHandler(pool))
-	r.Post("/query/explain", explainQueryHandler(pool))
+	r.Post("/query/execute", executeQueryHandler(pool, connMgr))
+	r.Post("/query/explain", explainQueryHandler(pool, connMgr))
 	r.Post("/statements/reset", resetStatementsHandler(pool))
 }
 
@@ -68,6 +69,7 @@ func topQueriesHandler(pool *pgxpool.Pool) http.HandlerFunc {
 type executeRequest struct {
 	SQL      string `json:"sql"`
 	ReadOnly bool   `json:"read_only"`
+	Database string `json:"database"` // optional; defaults to the PG_DSN database
 }
 
 // collectRows reads every row out of a pgx.Rows into a JSON-friendly shape.
@@ -96,7 +98,7 @@ func collectRows(rows pgx.Rows) (columns []string, resultRows []map[string]any, 
 	return columns, resultRows, rows.Err()
 }
 
-func executeQueryHandler(pool *pgxpool.Pool) http.HandlerFunc {
+func executeQueryHandler(defaultPool *pgxpool.Pool, connMgr *service.ConnectionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req executeRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -109,6 +111,18 @@ func executeQueryHandler(pool *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		ctx := r.Context()
+
+		// Each request resolves its own pool — never mutate defaultPool, it's
+		// shared (captured once) across every concurrent call to this handler.
+		pool := defaultPool
+		if req.Database != "" {
+			dbPool, err := connMgr.GetPoolForDB(ctx, req.Database)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			pool = dbPool
+		}
 
 		var columns []string
 		var resultRows []map[string]any
@@ -161,12 +175,13 @@ func executeQueryHandler(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-func explainQueryHandler(pool *pgxpool.Pool) http.HandlerFunc {
+func explainQueryHandler(defaultPool *pgxpool.Pool, connMgr *service.ConnectionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			SQL     string `json:"sql"`
-			Analyze bool   `json:"analyze"`
-			Buffers bool   `json:"buffers"`
+			SQL      string `json:"sql"`
+			Analyze  bool   `json:"analyze"`
+			Buffers  bool   `json:"buffers"`
+			Database string `json:"database"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
@@ -188,6 +203,18 @@ func explainQueryHandler(pool *pgxpool.Pool) http.HandlerFunc {
 		explainSQL := fmt.Sprintf("EXPLAIN (%s) %s", strings.Join(opts, ", "), req.SQL)
 
 		ctx := r.Context()
+
+		// Each request resolves its own pool — never mutate defaultPool, it's
+		// shared (captured once) across every concurrent call to this handler.
+		pool := defaultPool
+		if req.Database != "" {
+			dbPool, err := connMgr.GetPoolForDB(ctx, req.Database)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			pool = dbPool
+		}
 
 		// Run EXPLAIN in a transaction that we always rollback (to avoid side effects from ANALYZE)
 		tx, err := pool.BeginTx(ctx, pgx.TxOptions{})

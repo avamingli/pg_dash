@@ -93,15 +93,15 @@ export const api = {
   // Queries / Statements
   getTopQueries: (by = 'time', limit = 20) =>
     request<Record<string, unknown>[]>(`/api/queries/top?by=${by}&limit=${limit}`),
-  executeQuery: (sql: string, readOnly = true) =>
+  executeQuery: (sql: string, readOnly = true, database?: string) =>
     request<QueryResult>('/api/query/execute', {
       method: 'POST',
-      body: JSON.stringify({ sql, read_only: readOnly }),
+      body: JSON.stringify({ sql, read_only: readOnly, database }),
     }),
-  explainQuery: (sql: string, analyze = false, buffers = false) =>
+  explainQuery: (sql: string, analyze = false, buffers = false, database?: string) =>
     request<{ plan: unknown; sql: string }>('/api/query/explain', {
       method: 'POST',
-      body: JSON.stringify({ sql, analyze, buffers }),
+      body: JSON.stringify({ sql, analyze, buffers, database }),
     }),
   resetStatements: () =>
     request<{ status: string }>('/api/statements/reset', { method: 'POST' }),

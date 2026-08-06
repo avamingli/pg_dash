@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import {
   Play, FileText, Download, Clock, AlertTriangle,
-  ChevronLeft, ChevronRight, Plus, X, Shield, ShieldOff,
+  ChevronLeft, ChevronRight, Plus, X, Shield, ShieldOff, Database,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { QueryResult } from '@/types/metrics';
@@ -40,6 +40,16 @@ export default function SQLEditor() {
   const [readOnly, setReadOnly] = useState(true);
   const [explain, setExplain] = useState(false);
   const [page, setPage] = useState(0);
+
+  // Database switcher — '' means the default PG_DSN database
+  const [database, setDatabase] = useState('');
+  const [databases, setDatabases] = useState<string[]>([]);
+
+  useEffect(() => {
+    api.getDatabases()
+      .then(dbs => setDatabases(dbs.map(db => db.datname)))
+      .catch(() => {});
+  }, []);
 
   // History
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -82,13 +92,13 @@ export default function SQLEditor() {
 
     try {
       if (explain) {
-        const res = await api.explainQuery(sql, true, true);
+        const res = await api.explainQuery(sql, true, true, database || undefined);
         const elapsed = performance.now() - start;
         setExplainResult(res.plan as string | object);
         setDuration(elapsed);
         setHistory(prev => [{ sql, timestamp: new Date(), duration: elapsed }, ...prev].slice(0, 50));
       } else {
-        const res = await api.executeQuery(sql, readOnly);
+        const res = await api.executeQuery(sql, readOnly, database || undefined);
         const elapsed = performance.now() - start;
         setResult(res);
         setDuration(elapsed);
@@ -103,7 +113,7 @@ export default function SQLEditor() {
     } finally {
       setRunning(false);
     }
-  }, [activeTab.sql, running, explain, readOnly]);
+  }, [activeTab.sql, running, explain, readOnly, database]);
 
   // Ctrl+Enter
   useEffect(() => {
@@ -186,6 +196,22 @@ export default function SQLEditor() {
             {readOnly ? <Shield size={12} /> : <ShieldOff size={12} />}
             {readOnly ? 'Read Only' : 'Read/Write'}
           </button>
+
+          <div className="w-px h-5 bg-zinc-700 mx-1" />
+
+          <div className="flex items-center gap-1.5 px-2 py-1 text-xs rounded bg-zinc-800 text-zinc-300">
+            <Database size={12} className="text-zinc-500" />
+            <select
+              value={database}
+              onChange={e => setDatabase(e.target.value)}
+              className="bg-transparent focus:outline-none cursor-pointer"
+            >
+              <option value="">default (PG_DSN)</option>
+              {databases.map(name => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+          </div>
 
           <div className="ml-auto flex items-center gap-2">
             {duration != null && (

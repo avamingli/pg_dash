@@ -149,7 +149,7 @@ func main() {
 		handler.RegisterActivityRoutes(r, pool, connMgr)
 		handler.RegisterDatabaseRoutes(r, pool, connMgr)
 		handler.RegisterIndexRoutes(r, pool)
-		handler.RegisterQueryRoutes(r, pool)
+		handler.RegisterQueryRoutes(r, pool, connMgr)
 		handler.RegisterLockRoutes(r, pool)
 		handler.RegisterReplicationRoutes(r, pool, connMgr)
 		handler.RegisterVacuumRoutes(r, pool, connMgr)
