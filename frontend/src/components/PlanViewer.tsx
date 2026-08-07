@@ -29,6 +29,11 @@ interface PlanNode {
   'Hash Cond'?: string;
   'Workers Planned'?: number;
   'Workers Launched'?: number;
+  'Partial Mode'?: string;
+  'Slice'?: number;
+  'Segments'?: number;
+  'Senders'?: number;
+  'Receivers'?: number;
   Plans?: PlanNode[];
   [key: string]: unknown;
 }
@@ -172,6 +177,30 @@ function formatMs(ms: number): string {
   return `${(ms / 1000).toFixed(3)}s`;
 }
 
+// Mirrors EXPLAIN's own TEXT-format node label so the tree view reads the
+// same way "Finalize Aggregate" / "Gather Motion 3:1" would in a terminal —
+// JSON format never bakes this into "Node Type" itself, it's spread across
+// separate properties (Partial Mode, Senders, Receivers) that TEXT format
+// combines for you.
+function nodeLabel(node: PlanNode): string {
+  let label = node['Node Type'];
+  if (label === 'Aggregate' && node['Partial Mode'] && node['Partial Mode'] !== 'Simple') {
+    label = `${node['Partial Mode']} Aggregate`;
+  }
+  if (node['Senders'] != null && node['Receivers'] != null) {
+    label = `${label} ${node['Senders']}:${node['Receivers']}`;
+  }
+  return label;
+}
+
+// EXPLAIN TEXT shows "(slice1; segments: 3)" after a node whenever it's not
+// slice 0 (the coordinator-only slice) — same condition here.
+function sliceLabel(node: PlanNode): string | null {
+  if (node['Slice'] == null || node['Slice'] === 0) return null;
+  const segments = node['Segments'] != null ? `; segments: ${node['Segments']}` : '';
+  return `slice${node['Slice']}${segments}`;
+}
+
 // ── Components ──
 
 function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes }: {
@@ -225,8 +254,11 @@ function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes }: {
             <span className="w-[14px] shrink-0" />
           )}
 
-          <span className="font-mono text-xs text-blue-400 font-semibold">{node['Node Type']}</span>
+          <span className="font-mono text-xs text-blue-400 font-semibold">{nodeLabel(node)}</span>
           {relation && <span className="text-xs text-zinc-400">on {relation}</span>}
+          {sliceLabel(node) && (
+            <span className="text-[10px] text-zinc-600 font-mono">({sliceLabel(node)})</span>
+          )}
 
           <div className="ml-auto flex items-center gap-3 text-xs">
             {/* Time */}
