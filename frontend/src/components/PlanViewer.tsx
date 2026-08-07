@@ -30,6 +30,8 @@ interface PlanNode {
   'Workers Planned'?: number;
   'Workers Launched'?: number;
   'Partial Mode'?: string;
+  'Strategy'?: string;
+  'Parallel Aware'?: boolean;
   'Slice'?: number;
   'Segments'?: number;
   'Senders'?: number;
@@ -184,8 +186,25 @@ function formatMs(ms: number): string {
 // combines for you.
 function nodeLabel(node: PlanNode): string {
   let label = node['Node Type'];
-  if (label === 'Aggregate' && node['Partial Mode'] && node['Partial Mode'] !== 'Simple') {
-    label = `${node['Partial Mode']} Aggregate`;
+
+  // explain.c's JSON output always writes "Aggregate"/"SetOp" as Node Type
+  // regardless of strategy — sname, not the strategy-specific pname TEXT
+  // format actually prints — and puts the real distinction in a separate
+  // "Strategy" property instead. Same reasoning as Partial Mode/Motion
+  // below: JSON spreads across properties what TEXT combines into one name.
+  if (label === 'Aggregate') {
+    if (node['Strategy'] === 'Sorted') label = 'GroupAggregate';
+    else if (node['Strategy'] === 'Hashed') label = 'HashAggregate';
+    else if (node['Strategy'] === 'Mixed') label = 'MixedAggregate';
+    if (node['Partial Mode'] && node['Partial Mode'] !== 'Simple') {
+      label = `${node['Partial Mode']} ${label}`;
+    }
+  } else if (label === 'SetOp' && node['Strategy'] === 'Hashed') {
+    label = 'HashSetOp';
+  }
+
+  if (node['Parallel Aware']) {
+    label = `Parallel ${label}`;
   }
   if (node['Senders'] != null && node['Receivers'] != null) {
     label = `${label} ${node['Senders']}:${node['Receivers']}`;
