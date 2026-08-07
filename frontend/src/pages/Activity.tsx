@@ -10,6 +10,7 @@ import {
 import { api } from '@/lib/api';
 import { useMetrics } from '@/contexts/MetricsContext';
 import ExportButton from '@/components/ExportButton';
+import QueryWatchPanel from '@/components/QueryWatchPanel';
 import type { ActivityConnection, ActivitySummary } from '@/types/metrics';
 
 // ── colors ──
@@ -62,7 +63,7 @@ type SortDir = 'asc' | 'desc';
 // ── component ──
 
 export default function Activity() {
-  const { latest } = useMetrics();
+  const { latest, queryMetricsAvailable } = useMetrics();
   const [connections, setConnections] = useState<ActivityConnection[]>([]);
   const [summary, setSummary] = useState<ActivitySummary | null>(null);
   const [blocked, setBlocked] = useState<Record<string, unknown>[]>([]);
@@ -86,6 +87,7 @@ export default function Activity() {
 
   // Confirmation dialogs
   const [confirmAction, setConfirmAction] = useState<{ pid: number; action: 'cancel' | 'terminate' } | null>(null);
+  const [watchTarget, setWatchTarget] = useState<{ pid: number; sql: string } | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
 
   // Fetch data
@@ -323,6 +325,8 @@ export default function Activity() {
                     onToggle={() => setExpandedPid(isExpanded ? null : conn.pid)}
                     onCancel={() => setConfirmAction({ pid: conn.pid, action: 'cancel' })}
                     onTerminate={() => setConfirmAction({ pid: conn.pid, action: 'terminate' })}
+                    onWatch={() => setWatchTarget({ pid: conn.pid, sql: conn.query })}
+                    canWatch={queryMetricsAvailable}
                   />
                 );
               })}
@@ -449,6 +453,14 @@ export default function Activity() {
           </div>
         </div>
       )}
+
+      {watchTarget && (
+        <QueryWatchPanel
+          pid={watchTarget.pid}
+          sql={watchTarget.sql}
+          onClose={() => setWatchTarget(null)}
+        />
+      )}
     </div>
   );
 }
@@ -511,13 +523,15 @@ function StateBadge({ state }: { state: string }) {
   );
 }
 
-function ConnectionRow({ conn, duration, isExpanded, onToggle, onCancel, onTerminate }: {
+function ConnectionRow({ conn, duration, isExpanded, onToggle, onCancel, onTerminate, onWatch, canWatch }: {
   conn: ActivityConnection;
   duration: number | null;
   isExpanded: boolean;
   onToggle: () => void;
   onCancel: () => void;
   onTerminate: () => void;
+  onWatch: () => void;
+  canWatch: boolean;
 }) {
   const waitEvent = conn.wait_event_type
     ? `${conn.wait_event_type}:${conn.wait_event}`
@@ -551,6 +565,15 @@ function ConnectionRow({ conn, duration, isExpanded, onToggle, onCancel, onTermi
         </td>
         <td className="p-2">
           <div className="flex gap-1">
+            {canWatch && conn.state === 'active' && conn.query && (
+              <button
+                onClick={e => { e.stopPropagation(); onWatch(); }}
+                className="px-2 py-0.5 text-xs rounded bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40 transition-colors"
+                title="Watch live plan progress"
+              >
+                Watch
+              </button>
+            )}
             {conn.state === 'active' && conn.pid > 0 && (
               <button
                 onClick={e => { e.stopPropagation(); onCancel(); }}

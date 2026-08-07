@@ -23,6 +23,7 @@ import type {
   WorkfileUsage,
   ScanResult,
   QueryHistoryResponse,
+  QueryProgress,
 } from '@/types/metrics';
 
 const BASE_URL = import.meta.env.VITE_API_URL || '';
@@ -103,6 +104,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ sql, analyze, buffers, database }),
     }),
+  getQueryProgress: (pid: number) =>
+    request<QueryProgress>(`/api/queries/${pid}/progress`),
   resetStatements: () =>
     request<{ status: string }>('/api/statements/reset', { method: 'POST' }),
 

@@ -11,6 +11,7 @@ interface MetricsContextValue {
   connected: boolean;
   send: (data: unknown) => void;
   clusterInfo: ClusterInfo | null;
+  queryMetricsAvailable: boolean;
 }
 
 const MetricsContext = createContext<MetricsContextValue>({
@@ -19,6 +20,7 @@ const MetricsContext = createContext<MetricsContextValue>({
   connected: false,
   send: () => {},
   clusterInfo: null,
+  queryMetricsAvailable: false,
 });
 
 export function useMetrics() {
@@ -33,6 +35,7 @@ export function MetricsProvider({ children }: MetricsProviderProps) {
   const [latest, setLatest] = useState<MetricsSnapshot | null>(null);
   const historyRef = useRef<MetricsSnapshot[]>([]);
   const [clusterInfo, setClusterInfo] = useState<ClusterInfo | null>(null);
+  const [queryMetricsAvailable, setQueryMetricsAvailable] = useState(false);
   const [history, setHistory] = useState<MetricsSnapshot[]>([]);
 
   // Build WS URL — use VITE_WS_URL (direct to backend) when set,
@@ -67,6 +70,7 @@ export function MetricsProvider({ children }: MetricsProviderProps) {
         if (info.cluster_info) {
           setClusterInfo(info.cluster_info);
         }
+        setQueryMetricsAvailable(info.query_metrics_available ?? false);
       })
       .catch(() => {});
   }, []);
@@ -87,7 +91,7 @@ export function MetricsProvider({ children }: MetricsProviderProps) {
   }, [clusterInfo]);
 
   return (
-    <MetricsContext.Provider value={{ latest, history, connected, send, clusterInfo }}>
+    <MetricsContext.Provider value={{ latest, history, connected, send, clusterInfo, queryMetricsAvailable }}>
       {children}
     </MetricsContext.Provider>
   );

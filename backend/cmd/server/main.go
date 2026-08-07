@@ -145,11 +145,12 @@ func main() {
 
 	// API routes
 	r.Route("/api", func(r chi.Router) {
-		handler.RegisterServerRoutes(r, pool, clusterInfo)
+		handler.RegisterServerRoutes(r, pool, connMgr)
 		handler.RegisterActivityRoutes(r, pool, connMgr)
 		handler.RegisterDatabaseRoutes(r, pool, connMgr)
 		handler.RegisterIndexRoutes(r, pool)
 		handler.RegisterQueryRoutes(r, pool, connMgr)
+		handler.RegisterInstrumentationRoutes(r, pool, connMgr)
 		handler.RegisterLockRoutes(r, pool)
 		handler.RegisterReplicationRoutes(r, pool, connMgr)
 		handler.RegisterVacuumRoutes(r, pool, connMgr)

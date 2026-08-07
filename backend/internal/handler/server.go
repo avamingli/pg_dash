@@ -9,15 +9,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func RegisterServerRoutes(r chi.Router, pool *pgxpool.Pool, ci *service.ClusterInfo) {
-	r.Get("/server/info", serverInfoHandler(pool, ci))
+func RegisterServerRoutes(r chi.Router, pool *pgxpool.Pool, connMgr *service.ConnectionManager) {
+	r.Get("/server/info", serverInfoHandler(pool, connMgr))
 	r.Get("/server/config", serverConfigHandler(pool))
 }
 
 // serverInfoHandler returns version, uptime, and key server settings.
-func serverInfoHandler(pool *pgxpool.Pool, ci *service.ClusterInfo) http.HandlerFunc {
+func serverInfoHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+		ci := connMgr.GetClusterInfo()
 		result := make(map[string]interface{})
 
 		// Version
@@ -68,6 +69,7 @@ func serverInfoHandler(pool *pgxpool.Pool, ci *service.ClusterInfo) http.Handler
 		if ci != nil {
 			result["cluster_info"] = ci
 		}
+		result["query_metrics_available"] = connMgr.GetCapabilities().QueryMetrics
 
 		writeJSON(w, result)
 	}

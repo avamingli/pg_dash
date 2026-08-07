@@ -33,8 +33,41 @@ interface PlanNode {
   [key: string]: unknown;
 }
 
+export interface LiveNodeStats {
+  rows: number;
+  segments: number;
+}
+
 interface PlanViewerProps {
   plan: unknown;
+  /**
+   * Live per-node progress, keyed by plan_node_id. plan_node_id isn't part
+   * of EXPLAIN's JSON output, so it's not something this component can read
+   * off a node directly — the caller must pre-compute it with assignNodeIds
+   * (exported below) applied to the same parsed plan, matching GPDB's own
+   * pre-order numbering (setrefs.c: plan->plan_node_id = lastPlanNodeId++,
+   * assigned to a node before recursing into its children). Only verified
+   * against plain scan/join plans so far — may drift for subplans/CTEs.
+   */
+  liveNodes?: Record<number, LiveNodeStats>;
+}
+
+/**
+ * Assigns each node in a parsed EXPLAIN plan tree a sequential id in the
+ * same pre-order (parent before children) as GPDB's planner assigns
+ * plan_node_id, so live per-node stats keyed by that id can be matched back
+ * to a tree node. Exported so callers can compute it once from the same
+ * plan JSON they pass to PlanViewer.
+ */
+export function assignNodeIds(root: PlanNode): Map<PlanNode, number> {
+  const ids = new Map<PlanNode, number>();
+  let next = 0;
+  function visit(node: PlanNode) {
+    ids.set(node, next++);
+    (node.Plans ?? []).forEach(visit);
+  }
+  visit(root);
+  return ids;
 }
 
 // ── Helpers ──
@@ -97,13 +130,23 @@ function formatMs(ms: number): string {
 
 // ── Components ──
 
-function PlanNodeView({ node, depth, rootTime }: { node: PlanNode; depth: number; rootTime: number }) {
+function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes }: {
+  node: PlanNode;
+  depth: number;
+  rootTime: number;
+  nodeIds?: Map<PlanNode, number>;
+  liveNodes?: Record<number, LiveNodeStats>;
+}) {
   const [open, setOpen] = useState(depth < 3);
   const hasChildren = node.Plans && node.Plans.length > 0;
   const actualTime = getTotalTime(node);
   const timePct = rootTime > 0 ? (actualTime / rootTime * 100) : 0;
   const ratio = rowEstimateRatio(node);
   const color = nodeColor(node, rootTime);
+  const nid = nodeIds?.get(node);
+  const live = nid != null ? liveNodes?.[nid] : undefined;
+  const estRows = node['Plan Rows'];
+  const completionPct = live != null && estRows ? Math.min(999, Math.round((live.rows / estRows) * 100)) : null;
 
   const relation = node['Relation Name']
     ? `${node['Schema'] ? node['Schema'] + '.' : ''}${node['Relation Name']}${node['Alias'] && node['Alias'] !== node['Relation Name'] ? ` (${node['Alias']})` : ''}`
@@ -155,6 +198,17 @@ function PlanNodeView({ node, depth, rootTime }: { node: PlanNode; depth: number
             {/* Loops */}
             {(node['Actual Loops'] ?? 1) > 1 && (
               <span className="text-zinc-600">x{node['Actual Loops']}</span>
+            )}
+
+            {/* Live progress (query still running — no Actual Rows/Time yet) */}
+            {live != null && (
+              <span className="flex items-center gap-1.5 font-mono text-emerald-400" title={`${live.segments} segment(s) reporting`}>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse inline-block" />
+                {live.rows.toLocaleString()} rows
+                {completionPct != null && (
+                  <span className="text-emerald-500/70">~{completionPct}%</span>
+                )}
+              </span>
             )}
           </div>
         </div>
@@ -210,7 +264,7 @@ function PlanNodeView({ node, depth, rootTime }: { node: PlanNode; depth: number
       {open && hasChildren && (
         <div className="relative">
           {node.Plans!.map((child, i) => (
-            <PlanNodeView key={i} node={child} depth={depth + 1} rootTime={rootTime} />
+            <PlanNodeView key={i} node={child} depth={depth + 1} rootTime={rootTime} nodeIds={nodeIds} liveNodes={liveNodes} />
           ))}
         </div>
       )}
@@ -218,9 +272,10 @@ function PlanNodeView({ node, depth, rootTime }: { node: PlanNode; depth: number
   );
 }
 
-export default function PlanViewer({ plan }: PlanViewerProps) {
+export default function PlanViewer({ plan, liveNodes }: PlanViewerProps) {
   const [showRaw, setShowRaw] = useState(false);
   const root = parsePlan(plan);
+  const nodeIds = root ? assignNodeIds(root) : undefined;
 
   if (!root) {
     return (
@@ -263,7 +318,7 @@ export default function PlanViewer({ plan }: PlanViewerProps) {
           {typeof plan === 'string' ? plan : JSON.stringify(plan, null, 2)}
         </pre>
       ) : (
-        <PlanNodeView node={root} depth={0} rootTime={rootTime} />
+        <PlanNodeView node={root} depth={0} rootTime={rootTime} nodeIds={nodeIds} liveNodes={liveNodes} />
       )}
     </div>
   );

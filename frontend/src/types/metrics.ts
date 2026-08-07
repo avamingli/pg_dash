@@ -268,6 +268,7 @@ export interface ServerInfo {
   max_connections: number;
   settings: ServerSetting[];
   cluster_info?: ClusterInfo;
+  query_metrics_available?: boolean;
 }
 
 export interface ServerSetting {
@@ -347,6 +348,29 @@ export interface QueryResult {
   columns: string[];
   rows: Record<string, unknown>[];
   row_count: number;
+}
+
+// ── Live query instrumentation (GPCC-style plan progress) ──
+
+export interface QueryProgressNode {
+  segid: number;
+  pid: number;
+  nid: number;
+  tuplecount: number;
+  nloops: number;
+  ntuples: number;
+}
+
+export interface QueryProgressMemory {
+  segid: number;
+  vmem_mb: number;
+}
+
+export interface QueryProgress {
+  pid: number;
+  sess_id: number;
+  nodes: QueryProgressNode[];
+  memory?: QueryProgressMemory[];
 }
 
 // ── Checkpoint ──

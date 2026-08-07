@@ -27,6 +27,17 @@ type Capabilities struct {
 	StatWALFPIColumn        string // "wal_fpi" (upstream) or "wal_fpw" (WarehousePG); "" if !StatWAL
 	TableInsertsSinceVacuum bool // pg_stat_user_tables.n_ins_since_vacuum (PG 13+)
 	VacuumProgressByteCols  bool // pg_stat_progress_vacuum's byte-based columns (PG 17+)
+
+	// QueryMetrics is true when gp_enable_query_metrics is on AND the
+	// operator has bootstrapped query_metrics.gp_instrument_shmem_detail
+	// (see handler/instrumentation.go for the exact one-time setup SQL).
+	// pg_dash never creates this itself — it's a GUC (PGC_POSTMASTER, needs
+	// a cluster restart) plus a C-backed function from the already-shipped
+	// gp_internal_tools contrib module, both operator actions.
+	QueryMetrics bool
+	// SessionMemoryStats is true when the gp_internal_tools extension is
+	// installed (session_state.session_level_memory_consumption view).
+	SessionMemoryStats bool
 }
 
 // probedTables is every catalog view this codebase relies on a
@@ -81,5 +92,19 @@ func detectCapabilities(ctx context.Context, pool *pgxpool.Pool) (*Capabilities,
 	case has["pg_stat_wal.wal_fpw"]:
 		caps.StatWALFPIColumn = "wal_fpw"
 	}
+
+	var queryMetricsGUCOn, instrumentViewExists, memoryViewExists bool
+	err = pool.QueryRow(ctx, `
+		SELECT
+			COALESCE((SELECT setting = 'on' FROM pg_settings WHERE name = 'gp_enable_query_metrics'), false),
+			to_regclass('query_metrics.gp_instrument_shmem_detail') IS NOT NULL,
+			to_regclass('session_state.session_level_memory_consumption') IS NOT NULL
+	`).Scan(&queryMetricsGUCOn, &instrumentViewExists, &memoryViewExists)
+	if err != nil {
+		return nil, fmt.Errorf("detectCapabilities: %w", err)
+	}
+	caps.QueryMetrics = queryMetricsGUCOn && instrumentViewExists
+	caps.SessionMemoryStats = memoryViewExists
+
 	return caps, nil
 }
