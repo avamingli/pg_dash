@@ -1,11 +1,13 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import {
   Play, FileText, Download, Clock, AlertTriangle,
-  ChevronLeft, ChevronRight, Plus, X, Shield, ShieldOff, Database,
+  ChevronLeft, ChevronRight, Plus, X, Shield, ShieldOff, Database, Eye,
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { useMetrics } from '@/contexts/MetricsContext';
 import type { QueryResult } from '@/types/metrics';
 import PlanViewer from '@/components/PlanViewer';
+import QueryWatchPanel from '@/components/QueryWatchPanel';
 
 // ── types ──
 
@@ -26,6 +28,8 @@ interface HistoryEntry {
 const PAGE_SIZE = 50;
 
 export default function SQLEditor() {
+  const { queryMetricsAvailable } = useMetrics();
+
   // Tabs
   const [tabs, setTabs] = useState<QueryTab[]>([{ id: 1, name: 'Query 1', sql: '' }]);
   const [activeTabId, setActiveTabId] = useState(1);
@@ -55,6 +59,13 @@ export default function SQLEditor() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [showHistory, setShowHistory] = useState(false);
 
+  // Watch shortcut — find the pid of the query we just fired (without
+  // leaving this page to hunt for it in Activity Monitor) so it can be
+  // watched live while it's still running.
+  const [watchPid, setWatchPid] = useState<number | null>(null);
+  const [showWatchPanel, setShowWatchPanel] = useState(false);
+  const pidPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const activeTab = tabs.find(t => t.id === activeTabId) ?? tabs[0];
@@ -79,6 +90,41 @@ export default function SQLEditor() {
     if (activeTabId === id) setActiveTabId(newTabs[0].id);
   }
 
+  // Poll Activity Monitor's connection list (same data that page already
+  // shows) to find the pid this exact SQL just started running as, without
+  // making the user navigate over there themselves. Gives up after ~4.5s —
+  // fast queries just won't get a Watch shortcut, which is fine, there's
+  // nothing to watch by the time we'd find it anyway.
+  function startPidDiscovery(sql: string) {
+    if (pidPollRef.current) clearInterval(pidPollRef.current);
+    setWatchPid(null);
+    let attempts = 0;
+    const poll = () => {
+      attempts += 1;
+      api.getActivity()
+        .then(conns => {
+          const match = conns
+            .filter(c => c.state === 'active' && c.query.trim() === sql)
+            .sort((a, b) => (b.query_start ?? '').localeCompare(a.query_start ?? ''))[0];
+          if (match) {
+            setWatchPid(match.pid);
+            if (pidPollRef.current) clearInterval(pidPollRef.current);
+          } else if (attempts >= 15 && pidPollRef.current) {
+            clearInterval(pidPollRef.current);
+          }
+        })
+        .catch(() => {});
+    };
+    poll();
+    pidPollRef.current = setInterval(poll, 300);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (pidPollRef.current) clearInterval(pidPollRef.current);
+    };
+  }, []);
+
   const execute = useCallback(async () => {
     const sql = activeTab.sql.trim();
     if (!sql || running) return;
@@ -89,6 +135,10 @@ export default function SQLEditor() {
     setError('');
     setPage(0);
     const start = performance.now();
+
+    if (!explain && queryMetricsAvailable) {
+      startPidDiscovery(sql);
+    }
 
     try {
       if (explain) {
@@ -112,8 +162,11 @@ export default function SQLEditor() {
       setHistory(prev => [{ sql, timestamp: new Date(), duration: elapsed, error: msg }, ...prev].slice(0, 50));
     } finally {
       setRunning(false);
+      if (pidPollRef.current) clearInterval(pidPollRef.current);
+      setWatchPid(null);
+      setShowWatchPanel(false);
     }
-  }, [activeTab.sql, running, explain, readOnly, database]);
+  }, [activeTab.sql, running, explain, readOnly, database, queryMetricsAvailable]);
 
   // Ctrl+Enter
   useEffect(() => {
@@ -214,6 +267,12 @@ export default function SQLEditor() {
           </div>
 
           <div className="ml-auto flex items-center gap-2">
+            {running && watchPid != null && (
+              <button onClick={() => setShowWatchPanel(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40 transition-colors animate-pulse">
+                <Eye size={12} /> Watch (pid {watchPid})
+              </button>
+            )}
             {duration != null && (
               <span className="text-xs text-zinc-500">
                 <Clock size={12} className="inline mr-1" />
@@ -335,6 +394,14 @@ export default function SQLEditor() {
             )}
           </div>
         </div>
+      )}
+
+      {showWatchPanel && watchPid != null && (
+        <QueryWatchPanel
+          pid={watchPid}
+          sql={activeTab.sql.trim()}
+          onClose={() => setShowWatchPanel(false)}
+        />
       )}
     </div>
   );
