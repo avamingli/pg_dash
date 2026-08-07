@@ -44,27 +44,54 @@ interface PlanViewerProps {
    * Live per-node progress, keyed by plan_node_id. plan_node_id isn't part
    * of EXPLAIN's JSON output, so it's not something this component can read
    * off a node directly — the caller must pre-compute it with assignNodeIds
-   * (exported below) applied to the same parsed plan, matching GPDB's own
-   * pre-order numbering (setrefs.c: plan->plan_node_id = lastPlanNodeId++,
-   * assigned to a node before recursing into its children). Only verified
-   * against plain scan/join plans so far — may drift for subplans/CTEs.
+   * (exported below) applied to the same parsed plan. That function handles
+   * both PostgreSQL's planner (setrefs.c: plain pre-order, parent before
+   * children) and GPORCA's translator, which numbers one specific shape of
+   * join differently — see assignNodeIds' own comment. Verified against
+   * live clusters for both; may still drift for subplans/CTEs.
    */
   liveNodes?: Record<number, LiveNodeStats>;
 }
 
+const INDEX_NLJ_INNER_TYPES = new Set([
+  'Index Scan', 'Index Only Scan', 'Bitmap Heap Scan',
+]);
+
 /**
- * Assigns each node in a parsed EXPLAIN plan tree a sequential id in the
- * same pre-order (parent before children) as GPDB's planner assigns
- * plan_node_id, so live per-node stats keyed by that id can be matched back
- * to a tree node. Exported so callers can compute it once from the same
- * plan JSON they pass to PlanViewer.
+ * Assigns each node in a parsed EXPLAIN plan tree a sequential id matching
+ * how GPDB assigns plan_node_id, so live per-node stats keyed by that id can
+ * be matched back to a tree node.
+ *
+ * PostgreSQL's planner (setrefs.c) always numbers a node before recursing
+ * into lefttree then righttree — plain pre-order, outer child before inner.
+ * GPORCA's translator (CTranslatorDXLToPlStmt::TranslateDXLNLJoin) does too,
+ * *except* for a plain (non-index) Nested Loop Join: it numbers the INNER
+ * (right) child before the OUTER (left) one — the function's own comment:
+ * "left child may include a PartitionSelector with references to right
+ * child's columns, we need to translate right child first". An index NLJ's
+ * inner side (an Index/Bitmap scan re-driven by each outer row's value, so
+ * it's never cached) keeps the normal order — TranslateDXLHashJoin, for
+ * comparison, never reorders at all. Confirmed empirically against a live
+ * WarehousePG cluster: without this special case, live row counts for any
+ * ORCA broadcast/partition-wise Nested Loop land on the wrong node.
  */
-export function assignNodeIds(root: PlanNode): Map<PlanNode, number> {
+export function assignNodeIds(root: PlanNode, isORCA: boolean): Map<PlanNode, number> {
   const ids = new Map<PlanNode, number>();
   let next = 0;
   function visit(node: PlanNode) {
     ids.set(node, next++);
-    (node.Plans ?? []).forEach(visit);
+    const children = node.Plans ?? [];
+    const isNonIndexNLJ =
+      isORCA &&
+      node['Node Type'] === 'Nested Loop' &&
+      children.length === 2 &&
+      !INDEX_NLJ_INNER_TYPES.has(children[1]['Node Type']);
+    if (isNonIndexNLJ) {
+      visit(children[1]); // inner first
+      visit(children[0]); // outer second
+    } else {
+      children.forEach(visit);
+    }
   }
   visit(root);
   return ids;
@@ -89,6 +116,23 @@ function parsePlan(raw: unknown): PlanNode | null {
   } catch {
     return null;
   }
+}
+
+// EXPLAIN's top-level "Optimizer" property — "GPORCA" or "Postgres-based
+// planner" — sits alongside "Plan", not inside it, so this mirrors
+// parsePlan's own unwrapping instead of reading it off the returned node.
+function parseOptimizer(raw: unknown): string | undefined {
+  try {
+    let data = raw;
+    if (typeof data === 'string') data = JSON.parse(data);
+    if (Array.isArray(data) && data.length > 0) data = data[0];
+    if (typeof data === 'object' && data !== null && 'Optimizer' in data) {
+      return (data as Record<string, unknown>).Optimizer as string;
+    }
+  } catch {
+    // ignore
+  }
+  return undefined;
 }
 
 function getTotalTime(node: PlanNode): number {
@@ -282,7 +326,8 @@ function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes }: {
 export default function PlanViewer({ plan, liveNodes }: PlanViewerProps) {
   const [showRaw, setShowRaw] = useState(false);
   const root = parsePlan(plan);
-  const nodeIds = root ? assignNodeIds(root) : undefined;
+  const isORCA = parseOptimizer(plan) === 'GPORCA';
+  const nodeIds = root ? assignNodeIds(root, isORCA) : undefined;
 
   if (!root) {
     return (
