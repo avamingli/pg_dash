@@ -11,10 +11,22 @@ import QueryWatchPanel from '@/components/QueryWatchPanel';
 
 // ── types ──
 
+// Each tab owns its own execution state (running/result/error/...) so one
+// tab running a slow query doesn't block another tab from running its own —
+// they're independent connections on the backend already, the UI just used
+// to serialize them behind one shared set of state variables.
 interface QueryTab {
   id: number;
   name: string;
   sql: string;
+  running: boolean;
+  result: QueryResult | null;
+  explainResult: string | object | null;
+  error: string;
+  duration: number | null;
+  page: number;
+  watchPid: number | null;
+  showWatchPanel: boolean;
 }
 
 interface HistoryEntry {
@@ -27,23 +39,27 @@ interface HistoryEntry {
 
 const PAGE_SIZE = 50;
 
+function newTab(id: number): QueryTab {
+  return {
+    id, name: `Query ${id}`, sql: '',
+    running: false, result: null, explainResult: null, error: '', duration: null,
+    page: 0, watchPid: null, showWatchPanel: false,
+  };
+}
+
 export default function SQLEditor() {
   const { queryMetricsAvailable } = useMetrics();
 
   // Tabs
-  const [tabs, setTabs] = useState<QueryTab[]>([{ id: 1, name: 'Query 1', sql: '' }]);
+  const [tabs, setTabs] = useState<QueryTab[]>([newTab(1)]);
   const [activeTabId, setActiveTabId] = useState(1);
   const nextId = useRef(2);
 
-  // State
-  const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<QueryResult | null>(null);
-  const [explainResult, setExplainResult] = useState<string | object | null>(null);
-  const [error, setError] = useState('');
-  const [duration, setDuration] = useState<number | null>(null);
+  // Toolbar toggles — shared across tabs, applied to whichever tab is active
+  // when Execute is pressed (captured by value at that point, so flipping a
+  // toggle afterward never affects a query already in flight).
   const [readOnly, setReadOnly] = useState(true);
   const [explain, setExplain] = useState(false);
-  const [page, setPage] = useState(0);
 
   // Database switcher — '' means the default PG_DSN database
   const [database, setDatabase] = useState('');
@@ -55,36 +71,35 @@ export default function SQLEditor() {
       .catch(() => {});
   }, []);
 
-  // History
+  // History (shared across tabs — "what did I run recently, anywhere")
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [showHistory, setShowHistory] = useState(false);
 
-  // Watch shortcut — find the pid of the query we just fired (without
-  // leaving this page to hunt for it in Activity Monitor) so it can be
-  // watched live while it's still running.
-  const [watchPid, setWatchPid] = useState<number | null>(null);
-  const [showWatchPanel, setShowWatchPanel] = useState(false);
-  const pidPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // One pid-discovery poll timer per tab, keyed by tab id.
+  const pidPollRefs = useRef<Record<number, ReturnType<typeof setInterval>>>({});
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const activeTab = tabs.find(t => t.id === activeTabId) ?? tabs[0];
 
+  function updateTab(id: number, patch: Partial<QueryTab>) {
+    setTabs(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t));
+  }
+
   function updateSQL(sql: string) {
-    setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, sql } : t));
+    updateTab(activeTabId, { sql });
   }
 
   function addTab() {
     const id = nextId.current++;
-    setTabs(prev => [...prev, { id, name: `Query ${id}`, sql: '' }]);
+    setTabs(prev => [...prev, newTab(id)]);
     setActiveTabId(id);
-    setResult(null);
-    setExplainResult(null);
-    setError('');
   }
 
   function closeTab(id: number) {
     if (tabs.length <= 1) return;
+    if (pidPollRefs.current[id]) clearInterval(pidPollRefs.current[id]);
+    delete pidPollRefs.current[id];
     const newTabs = tabs.filter(t => t.id !== id);
     setTabs(newTabs);
     if (activeTabId === id) setActiveTabId(newTabs[0].id);
@@ -95,9 +110,9 @@ export default function SQLEditor() {
   // making the user navigate over there themselves. Gives up after ~4.5s —
   // fast queries just won't get a Watch shortcut, which is fine, there's
   // nothing to watch by the time we'd find it anyway.
-  function startPidDiscovery(sql: string) {
-    if (pidPollRef.current) clearInterval(pidPollRef.current);
-    setWatchPid(null);
+  function startPidDiscovery(tabId: number, sql: string) {
+    if (pidPollRefs.current[tabId]) clearInterval(pidPollRefs.current[tabId]);
+    updateTab(tabId, { watchPid: null });
     let attempts = 0;
     const poll = () => {
       attempts += 1;
@@ -107,66 +122,64 @@ export default function SQLEditor() {
             .filter(c => c.state === 'active' && c.query.trim() === sql)
             .sort((a, b) => (b.query_start ?? '').localeCompare(a.query_start ?? ''))[0];
           if (match) {
-            setWatchPid(match.pid);
-            if (pidPollRef.current) clearInterval(pidPollRef.current);
-          } else if (attempts >= 15 && pidPollRef.current) {
-            clearInterval(pidPollRef.current);
+            updateTab(tabId, { watchPid: match.pid });
+            clearInterval(pidPollRefs.current[tabId]);
+            delete pidPollRefs.current[tabId];
+          } else if (attempts >= 15) {
+            clearInterval(pidPollRefs.current[tabId]);
+            delete pidPollRefs.current[tabId];
           }
         })
         .catch(() => {});
     };
     poll();
-    pidPollRef.current = setInterval(poll, 300);
+    pidPollRefs.current[tabId] = setInterval(poll, 300);
   }
 
   useEffect(() => {
     return () => {
-      if (pidPollRef.current) clearInterval(pidPollRef.current);
+      Object.values(pidPollRefs.current).forEach(clearInterval);
     };
   }, []);
 
   const execute = useCallback(async () => {
-    const sql = activeTab.sql.trim();
-    if (!sql || running) return;
+    const tabId = activeTabId;
+    const tab = tabs.find(t => t.id === tabId);
+    const sql = tab?.sql.trim() ?? '';
+    if (!sql || tab?.running) return;
 
-    setRunning(true);
-    setResult(null);
-    setExplainResult(null);
-    setError('');
-    setPage(0);
+    updateTab(tabId, { running: true, result: null, explainResult: null, error: '', page: 0 });
     const start = performance.now();
 
     if (!explain && queryMetricsAvailable) {
-      startPidDiscovery(sql);
+      startPidDiscovery(tabId, sql);
     }
 
     try {
       if (explain) {
         const res = await api.explainQuery(sql, true, true, database || undefined);
         const elapsed = performance.now() - start;
-        setExplainResult(res.plan as string | object);
-        setDuration(elapsed);
+        updateTab(tabId, { explainResult: res.plan as string | object, duration: elapsed });
         setHistory(prev => [{ sql, timestamp: new Date(), duration: elapsed }, ...prev].slice(0, 50));
       } else {
         const res = await api.executeQuery(sql, readOnly, database || undefined);
         const elapsed = performance.now() - start;
-        setResult(res);
-        setDuration(elapsed);
+        updateTab(tabId, { result: res, duration: elapsed });
         setHistory(prev => [{ sql, timestamp: new Date(), duration: elapsed, rowCount: res.row_count }, ...prev].slice(0, 50));
       }
     } catch (e) {
       const elapsed = performance.now() - start;
       const msg = e instanceof Error ? e.message : 'Unknown error';
-      setError(msg);
-      setDuration(elapsed);
+      updateTab(tabId, { error: msg, duration: elapsed });
       setHistory(prev => [{ sql, timestamp: new Date(), duration: elapsed, error: msg }, ...prev].slice(0, 50));
     } finally {
-      setRunning(false);
-      if (pidPollRef.current) clearInterval(pidPollRef.current);
-      setWatchPid(null);
-      setShowWatchPanel(false);
+      if (pidPollRefs.current[tabId]) {
+        clearInterval(pidPollRefs.current[tabId]);
+        delete pidPollRefs.current[tabId];
+      }
+      updateTab(tabId, { running: false, watchPid: null, showWatchPanel: false });
     }
-  }, [activeTab.sql, running, explain, readOnly, database, queryMetricsAvailable]);
+  }, [activeTabId, tabs, explain, readOnly, database, queryMetricsAvailable]);
 
   // Ctrl+Enter
   useEffect(() => {
@@ -182,6 +195,7 @@ export default function SQLEditor() {
 
   // CSV export
   function exportCSV() {
+    const result = activeTab.result;
     if (!result) return;
     const lines: string[] = [];
     lines.push(result.columns.map(c => `"${c}"`).join(','));
@@ -199,7 +213,9 @@ export default function SQLEditor() {
     URL.revokeObjectURL(url);
   }
 
-  // Paginated rows
+  // Paginated rows (of the active tab's result)
+  const result = activeTab.result;
+  const page = activeTab.page;
   const pagedRows = result ? result.rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE) : [];
   const totalPages = result ? Math.ceil(result.rows.length / PAGE_SIZE) : 0;
 
@@ -214,10 +230,13 @@ export default function SQLEditor() {
               className={`flex items-center gap-2 px-3 py-2 text-sm border-r border-zinc-800 cursor-pointer ${
                 t.id === activeTabId ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-800/50'
               }`}
-              onClick={() => { setActiveTabId(t.id); setResult(null); setExplainResult(null); setError(''); }}
+              onClick={() => setActiveTabId(t.id)}
             >
               <FileText size={12} />
               <span>{t.name}</span>
+              {t.running && (
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" title="Running" />
+              )}
               {tabs.length > 1 && (
                 <button onClick={e => { e.stopPropagation(); closeTab(t.id); }} className="hover:text-red-400"><X size={12} /></button>
               )}
@@ -228,9 +247,9 @@ export default function SQLEditor() {
 
         {/* Toolbar */}
         <div className="flex items-center gap-2 px-3 py-2 bg-zinc-900 border-b border-zinc-800">
-          <button onClick={execute} disabled={running || !activeTab.sql.trim()}
+          <button onClick={execute} disabled={activeTab.running || !activeTab.sql.trim()}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-green-600 hover:bg-green-500 text-white font-medium disabled:opacity-50 transition-colors">
-            <Play size={14} /> {running ? 'Running...' : 'Execute'}
+            <Play size={14} /> {activeTab.running ? 'Running...' : 'Execute'}
           </button>
           <span className="text-xs text-zinc-600 ml-1">Ctrl+Enter</span>
           <div className="w-px h-5 bg-zinc-700 mx-1" />
@@ -267,16 +286,16 @@ export default function SQLEditor() {
           </div>
 
           <div className="ml-auto flex items-center gap-2">
-            {running && watchPid != null && (
-              <button onClick={() => setShowWatchPanel(true)}
+            {activeTab.running && activeTab.watchPid != null && (
+              <button onClick={() => updateTab(activeTabId, { showWatchPanel: true })}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40 transition-colors animate-pulse">
-                <Eye size={12} /> Watch (pid {watchPid})
+                <Eye size={12} /> Watch (pid {activeTab.watchPid})
               </button>
             )}
-            {duration != null && (
+            {activeTab.duration != null && (
               <span className="text-xs text-zinc-500">
                 <Clock size={12} className="inline mr-1" />
-                {duration < 1000 ? `${duration.toFixed(0)}ms` : `${(duration / 1000).toFixed(2)}s`}
+                {activeTab.duration < 1000 ? `${activeTab.duration.toFixed(0)}ms` : `${(activeTab.duration / 1000).toFixed(2)}s`}
               </span>
             )}
             <button onClick={() => setShowHistory(!showHistory)}
@@ -300,17 +319,17 @@ export default function SQLEditor() {
 
           {/* Results */}
           <div className="flex-1 min-h-[200px] overflow-auto bg-zinc-950">
-            {error && (
+            {activeTab.error && (
               <div className="p-4 bg-red-500/10 border-b border-red-500/30">
                 <div className="flex items-start gap-2">
                   <AlertTriangle className="text-red-400 shrink-0 mt-0.5" size={16} />
-                  <pre className="text-sm text-red-300 whitespace-pre-wrap font-mono">{error}</pre>
+                  <pre className="text-sm text-red-300 whitespace-pre-wrap font-mono">{activeTab.error}</pre>
                 </div>
               </div>
             )}
 
-            {explainResult && (
-              <PlanViewer plan={explainResult} />
+            {activeTab.explainResult && (
+              <PlanViewer plan={activeTab.explainResult} />
             )}
 
             {result && (
@@ -321,10 +340,10 @@ export default function SQLEditor() {
                   <div className="flex items-center gap-2">
                     {totalPages > 1 && (
                       <div className="flex items-center gap-1 text-xs text-zinc-400">
-                        <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+                        <button onClick={() => updateTab(activeTabId, { page: Math.max(0, page - 1) })} disabled={page === 0}
                           className="p-0.5 hover:text-white disabled:opacity-30"><ChevronLeft size={14} /></button>
                         <span>{page + 1} / {totalPages}</span>
-                        <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
+                        <button onClick={() => updateTab(activeTabId, { page: Math.min(totalPages - 1, page + 1) })} disabled={page >= totalPages - 1}
                           className="p-0.5 hover:text-white disabled:opacity-30"><ChevronRight size={14} /></button>
                       </div>
                     )}
@@ -360,7 +379,7 @@ export default function SQLEditor() {
               </div>
             )}
 
-            {!error && !result && !explainResult && !running && (
+            {!activeTab.error && !result && !activeTab.explainResult && !activeTab.running && (
               <div className="flex items-center justify-center h-full text-zinc-600 text-sm">
                 Press Ctrl+Enter or click Execute to run query
               </div>
@@ -396,11 +415,11 @@ export default function SQLEditor() {
         </div>
       )}
 
-      {showWatchPanel && watchPid != null && (
+      {activeTab.showWatchPanel && activeTab.watchPid != null && (
         <QueryWatchPanel
-          pid={watchPid}
+          pid={activeTab.watchPid}
           sql={activeTab.sql.trim()}
-          onClose={() => setShowWatchPanel(false)}
+          onClose={() => updateTab(activeTabId, { showWatchPanel: false })}
         />
       )}
     </div>
