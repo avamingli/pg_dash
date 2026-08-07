@@ -146,7 +146,14 @@ function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes }: {
   const nid = nodeIds?.get(node);
   const live = nid != null ? liveNodes?.[nid] : undefined;
   const estRows = node['Plan Rows'];
-  const completionPct = live != null && estRows ? Math.min(999, Math.round((live.rows / estRows) * 100)) : null;
+  // Plan Rows is GPDB's per-segment estimate for a distributed node, but
+  // live.rows is summed across every segment reporting for this node — divide
+  // back down to a per-segment average before comparing, or the ratio comes
+  // out inflated by roughly the segment count regardless of how good the
+  // optimizer's estimate actually is.
+  const completionPct = live != null && estRows && live.segments > 0
+    ? Math.min(999, Math.round((live.rows / live.segments / estRows) * 100))
+    : null;
 
   const relation = node['Relation Name']
     ? `${node['Schema'] ? node['Schema'] + '.' : ''}${node['Relation Name']}${node['Alias'] && node['Alias'] !== node['Relation Name'] ? ` (${node['Alias']})` : ''}`
