@@ -16,7 +16,14 @@ function aggregateByNode(nodes: QueryProgressNode[]): Record<number, LiveNodeSta
   const byNode: Record<number, { rows: number; segments: Set<number> }> = {};
   for (const n of nodes) {
     const entry = byNode[n.nid] ?? (byNode[n.nid] = { rows: 0, segments: new Set() });
-    entry.rows += n.ntuples;
+    // ntuples only accumulates once a scan *cycle* completes (InstrEndLoop) —
+    // a plain single-pass node (e.g. a driving outer Seq Scan that never
+    // rescans) stays at ntuples=0 for its entire run and only shows up in
+    // tuplecount (the current, still in-progress cycle's count). Rescanned
+    // nodes like Materialize roll most of their total into ntuples quickly,
+    // so summing both is correct for either case without needing to know
+    // which kind of node this is.
+    entry.rows += n.ntuples + n.tuplecount;
     entry.segments.add(n.segid);
   }
   const result: Record<number, LiveNodeStats> = {};
