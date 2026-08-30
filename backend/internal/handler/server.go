@@ -70,6 +70,7 @@ func serverInfoHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager) h
 			result["cluster_info"] = ci
 		}
 		result["query_metrics_available"] = connMgr.GetCapabilities().QueryMetrics
+		result["real_plan_shmem_available"] = connMgr.GetCapabilities().RealPlanShmem
 
 		writeJSON(w, result)
 	}

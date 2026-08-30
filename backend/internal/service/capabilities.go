@@ -38,6 +38,15 @@ type Capabilities struct {
 	// SessionMemoryStats is true when the gp_internal_tools extension is
 	// installed (session_state.session_level_memory_consumption view).
 	SessionMemoryStats bool
+
+	// RealPlanShmem is true when the connected kernel captures the real,
+	// already-planned tree into shmem at execution start (GpCapturePlanShmem,
+	// planshmem.c — a WHPG-only kernel feature, not present on stock GPDB).
+	// When true, the watch endpoint can build the plan-node tree from
+	// query_metrics.gp_plan_shmem_detail (real plan_node_id, real parent/
+	// child, no re-EXPLAIN, no client-side node-numbering) instead of the
+	// EXPLAIN-based fallback every other capability level uses.
+	RealPlanShmem bool
 }
 
 // probedTables is every catalog view this codebase relies on a
@@ -93,18 +102,20 @@ func detectCapabilities(ctx context.Context, pool *pgxpool.Pool) (*Capabilities,
 		caps.StatWALFPIColumn = "wal_fpw"
 	}
 
-	var queryMetricsGUCOn, instrumentViewExists, memoryViewExists bool
+	var queryMetricsGUCOn, instrumentViewExists, memoryViewExists, planShmemViewExists bool
 	err = pool.QueryRow(ctx, `
 		SELECT
 			COALESCE((SELECT setting = 'on' FROM pg_settings WHERE name = 'gp_enable_query_metrics'), false),
 			to_regclass('query_metrics.gp_instrument_shmem_detail') IS NOT NULL,
-			to_regclass('session_state.session_level_memory_consumption') IS NOT NULL
-	`).Scan(&queryMetricsGUCOn, &instrumentViewExists, &memoryViewExists)
+			to_regclass('session_state.session_level_memory_consumption') IS NOT NULL,
+			to_regclass('query_metrics.gp_plan_shmem_detail') IS NOT NULL
+	`).Scan(&queryMetricsGUCOn, &instrumentViewExists, &memoryViewExists, &planShmemViewExists)
 	if err != nil {
 		return nil, fmt.Errorf("detectCapabilities: %w", err)
 	}
 	caps.QueryMetrics = queryMetricsGUCOn && instrumentViewExists
 	caps.SessionMemoryStats = memoryViewExists
+	caps.RealPlanShmem = queryMetricsGUCOn && planShmemViewExists
 
 	return caps, nil
 }

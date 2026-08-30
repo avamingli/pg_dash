@@ -24,6 +24,32 @@ WHERE ssid = $1
   AND ccnt = (SELECT max(ccnt) FROM query_metrics.gp_instrument_shmem_detail WHERE ssid = $1)
 ORDER BY segid, nid`
 
+// PlanShmemDetailForSession returns the real plan tree captured at query
+// start by the kernel's GpCapturePlanShmem (WHPG-only; see
+// service.Capabilities.RealPlanShmem) — one row per (segment, plan node)
+// with the true plan_node_id/parent_nid/node_type, no re-EXPLAIN and no
+// client-side node-numbering needed. Same ccnt-filtering rationale as
+// InstrumentationDetailForSession. $1 = sess_id.
+const PlanShmemDetailForSession = `
+SELECT
+    segid,
+    pid,
+    nid,
+    parent_nid,
+    node_type,
+    parallel_aware,
+    strategy,
+    partial_mode,
+    operation,
+    motion_senders,
+    motion_receivers,
+    relname,
+    plan_rows
+FROM query_metrics.gp_plan_shmem_detail
+WHERE ssid = $1
+  AND ccnt = (SELECT max(ccnt) FROM query_metrics.gp_plan_shmem_detail WHERE ssid = $1)
+ORDER BY segid, nid`
+
 // SessIDForPid resolves a pg_stat_activity.pid to its sess_id, the key
 // InstrumentationDetailForSession/SessionMemoryForSession filter on.
 // $1 = pid.

@@ -64,6 +64,18 @@ func queryProgressHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager
 			}
 		}
 
+		// RealPlanShmem (WHPG-only kernel feature): the real plan tree,
+		// keyed by the true plan_node_id — lets the client skip re-running
+		// EXPLAIN and re-deriving node numbering entirely. Absent on any
+		// server without GpCapturePlanShmem; the client falls back to its
+		// EXPLAIN-based reconstruction when "plan" isn't present.
+		if caps.RealPlanShmem {
+			plan, err := queryRows(ctx, pool, query.PlanShmemDetailForSession, sessID)
+			if err == nil {
+				result["plan"] = plan
+			}
+		}
+
 		writeJSON(w, result)
 	}
 }
