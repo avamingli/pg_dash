@@ -31,6 +31,7 @@ interface PlanNode {
   'Workers Launched'?: number;
   'Partial Mode'?: string;
   'Strategy'?: string;
+  'Operation'?: string;
   'Parallel Aware'?: boolean;
   'Slice'?: number;
   'Segments'?: number;
@@ -201,6 +202,13 @@ function nodeLabel(node: PlanNode): string {
     }
   } else if (label === 'SetOp' && node['Strategy'] === 'Hashed') {
     label = 'HashSetOp';
+  } else if (label === 'ModifyTable' && node['Operation']) {
+    // explain.c's TEXT pname for a ModifyTable is the operation itself
+    // ("Insert"/"Update"/"Delete"), not "ModifyTable" — sname (JSON's
+    // "Node Type") stays generic and puts the real value in "Operation".
+    label = node['Operation'];
+  } else if ((label === 'Foreign Scan' || label === 'Dynamic Foreign Scan') && node['Operation'] && node['Operation'] !== 'Select') {
+    label = `${label.replace('Scan', node['Operation'])}`;
   }
 
   if (node['Parallel Aware']) {
