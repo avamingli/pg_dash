@@ -28,8 +28,9 @@ func TestAggregatorRingBuffer(t *testing.T) {
 	go hub.Run()
 
 	pgCollector := pgmon.NewCollector(pool)
+	logCollector := pgmon.NewLogCollector(pool)
 	osCollector := osmon.NewSystemCollectorWithPGData("/home/gpadmin/dbhouse/pg17")
-	agg := NewAggregator(pgCollector, osCollector, hub, nil)
+	agg := NewAggregator(pgCollector, logCollector, osCollector, hub, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -112,8 +113,9 @@ func TestAggregatorStartStop(t *testing.T) {
 	go hub.Run()
 
 	pgCollector := pgmon.NewCollector(pool)
+	logCollector := pgmon.NewLogCollector(pool)
 	osCollector := osmon.NewSystemCollectorWithPGData("/home/gpadmin/dbhouse/pg17")
-	agg := NewAggregator(pgCollector, osCollector, hub, nil)
+	agg := NewAggregator(pgCollector, logCollector, osCollector, hub, nil)
 
 	if agg.IsRunning() {
 		t.Error("aggregator should not be running before Start")

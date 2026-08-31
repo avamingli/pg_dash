@@ -15,12 +15,14 @@ import (
 	"github.com/avamingli/dbhouse-web/backend/internal/monitor"
 	osmon "github.com/avamingli/dbhouse-web/backend/internal/monitor/os"
 	pgmon "github.com/avamingli/dbhouse-web/backend/internal/monitor/pg"
+	"github.com/avamingli/dbhouse-web/backend/internal/service"
 	"github.com/avamingli/dbhouse-web/backend/internal/ws"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var testPool *pgxpool.Pool
+var testConnMgr *service.ConnectionManager
 
 func TestMain(m *testing.M) {
 	dsn := os.Getenv("PG_DSN")
@@ -37,6 +39,17 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	testPool = pool
+
+	connMgr, err := service.NewConnectionManager(dsn)
+	if err != nil {
+		os.Exit(0)
+	}
+	defer connMgr.Close()
+	if _, err := connMgr.TestConnection(context.Background()); err != nil {
+		os.Exit(0)
+	}
+	testConnMgr = connMgr
+
 	code := m.Run()
 	pool.Close()
 	os.Exit(code)
@@ -45,15 +58,15 @@ func TestMain(m *testing.M) {
 func setupRouter(pool *pgxpool.Pool) chi.Router {
 	r := chi.NewRouter()
 	r.Route("/api", func(r chi.Router) {
-		RegisterServerRoutes(r, pool)
-		RegisterActivityRoutes(r, pool)
-		RegisterDatabaseRoutes(r, pool)
+		RegisterServerRoutes(r, pool, testConnMgr)
+		RegisterActivityRoutes(r, pool, testConnMgr)
+		RegisterDatabaseRoutes(r, pool, testConnMgr)
 		RegisterIndexRoutes(r, pool)
-		RegisterQueryRoutes(r, pool)
+		RegisterQueryRoutes(r, pool, testConnMgr)
 		RegisterLockRoutes(r, pool)
-		RegisterReplicationRoutes(r, pool)
-		RegisterVacuumRoutes(r, pool)
-		RegisterCheckpointRoutes(r, pool)
+		RegisterReplicationRoutes(r, pool, testConnMgr)
+		RegisterVacuumRoutes(r, pool, testConnMgr)
+		RegisterCheckpointRoutes(r, pool, testConnMgr)
 	})
 	return r
 }
@@ -364,10 +377,11 @@ func TestMetricsHandlers(t *testing.T) {
 	}
 
 	pgCollector := pgmon.NewCollector(testPool)
+	logCollector := pgmon.NewLogCollector(testPool)
 	osCollector := osmon.NewSystemCollectorWithPGData(pgdata)
 	hub := ws.NewHub()
 	go hub.Run()
-	agg := monitor.NewAggregator(pgCollector, osCollector, hub, nil)
+	agg := monitor.NewAggregator(pgCollector, logCollector, osCollector, hub, nil)
 	agg.Start(context.Background())
 	defer agg.Stop()
 
