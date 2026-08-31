@@ -24,13 +24,15 @@ WHERE ssid = $1
   AND ccnt = (SELECT max(ccnt) FROM query_metrics.gp_instrument_shmem_detail WHERE ssid = $1)
 ORDER BY segid, nid`
 
-// PlanShmemDetailForSession returns the real plan tree captured at query
-// start by the kernel's GpCapturePlanShmem (WHPG-only; see
-// service.Capabilities.RealPlanShmem) — one row per (segment, plan node)
-// with the true plan_node_id/parent_nid/node_type, no re-EXPLAIN and no
-// client-side node-numbering needed. Same ccnt-filtering rationale as
-// InstrumentationDetailForSession. $1 = sess_id.
-const PlanShmemDetailForSession = `
+// PlanTreeDetailForSession returns the real plan tree captured at query
+// start by the standalone whpg_plan_tree extension (WHPG7/GPDB7, Cloudberry
+// and WHPG19-next; see service.Capabilities.RealPlanShmem) — one row per
+// (segment, plan node) with the true plan_node_id/parent_nid/node_type, no
+// re-EXPLAIN and no client-side node-numbering needed. Lives in its own
+// plan_tree schema, deliberately not query_metrics (that schema belongs
+// to the unrelated, pre-existing gp_instrument_shmem_detail below). Same
+// ccnt-filtering rationale as InstrumentationDetailForSession. $1 = sess_id.
+const PlanTreeDetailForSession = `
 SELECT
     segid,
     pid,
@@ -48,9 +50,9 @@ SELECT
     startup_cost,
     total_cost,
     plan_width
-FROM query_metrics.gp_plan_shmem_detail
+FROM plan_tree.plan_tree_detail
 WHERE ssid = $1
-  AND ccnt = (SELECT max(ccnt) FROM query_metrics.gp_plan_shmem_detail WHERE ssid = $1)
+  AND ccnt = (SELECT max(ccnt) FROM plan_tree.plan_tree_detail WHERE ssid = $1)
 ORDER BY segid, nid`
 
 // SessIDForPid resolves a pg_stat_activity.pid to its sess_id, the key

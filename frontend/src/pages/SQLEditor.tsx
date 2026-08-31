@@ -48,7 +48,9 @@ function newTab(id: number): QueryTab {
 }
 
 export default function SQLEditor() {
-  const { queryMetricsAvailable } = useMetrics();
+  const { queryMetricsAvailable, realPlanShmemAvailable } = useMetrics();
+  // See Activity.tsx's canWatchQueries comment — same combined gate.
+  const canWatchQueries = queryMetricsAvailable && realPlanShmemAvailable;
 
   // Tabs
   const [tabs, setTabs] = useState<QueryTab[]>([newTab(1)]);
@@ -151,7 +153,7 @@ export default function SQLEditor() {
     updateTab(tabId, { running: true, result: null, explainResult: null, error: '', page: 0 });
     const start = performance.now();
 
-    if (!explain && queryMetricsAvailable) {
+    if (!explain && canWatchQueries) {
       startPidDiscovery(tabId, sql);
     }
 
@@ -185,7 +187,7 @@ export default function SQLEditor() {
       // off `running` too, so it still disappears correctly on its own.
       updateTab(tabId, { running: false });
     }
-  }, [activeTabId, tabs, explain, readOnly, database, queryMetricsAvailable]);
+  }, [activeTabId, tabs, explain, readOnly, database, canWatchQueries]);
 
   // Ctrl+Enter
   useEffect(() => {

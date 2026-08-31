@@ -12,6 +12,9 @@ interface MetricsContextValue {
   send: (data: unknown) => void;
   clusterInfo: ClusterInfo | null;
   queryMetricsAvailable: boolean;
+  // Live query plan tree requires both this AND queryMetricsAvailable —
+  // see ServerInfo.real_plan_shmem_available.
+  realPlanShmemAvailable: boolean;
 }
 
 const MetricsContext = createContext<MetricsContextValue>({
@@ -21,6 +24,7 @@ const MetricsContext = createContext<MetricsContextValue>({
   send: () => {},
   clusterInfo: null,
   queryMetricsAvailable: false,
+  realPlanShmemAvailable: false,
 });
 
 export function useMetrics() {
@@ -36,6 +40,7 @@ export function MetricsProvider({ children }: MetricsProviderProps) {
   const historyRef = useRef<MetricsSnapshot[]>([]);
   const [clusterInfo, setClusterInfo] = useState<ClusterInfo | null>(null);
   const [queryMetricsAvailable, setQueryMetricsAvailable] = useState(false);
+  const [realPlanShmemAvailable, setRealPlanShmemAvailable] = useState(false);
   const [history, setHistory] = useState<MetricsSnapshot[]>([]);
 
   // Build WS URL — use VITE_WS_URL (direct to backend) when set,
@@ -71,6 +76,7 @@ export function MetricsProvider({ children }: MetricsProviderProps) {
           setClusterInfo(info.cluster_info);
         }
         setQueryMetricsAvailable(info.query_metrics_available ?? false);
+        setRealPlanShmemAvailable(info.real_plan_shmem_available ?? false);
       })
       .catch(() => {});
   }, []);
@@ -91,7 +97,7 @@ export function MetricsProvider({ children }: MetricsProviderProps) {
   }, [clusterInfo]);
 
   return (
-    <MetricsContext.Provider value={{ latest, history, connected, send, clusterInfo, queryMetricsAvailable }}>
+    <MetricsContext.Provider value={{ latest, history, connected, send, clusterInfo, queryMetricsAvailable, realPlanShmemAvailable }}>
       {children}
     </MetricsContext.Provider>
   );

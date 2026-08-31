@@ -63,7 +63,12 @@ type SortDir = 'asc' | 'desc';
 // ── component ──
 
 export default function Activity() {
-  const { latest, queryMetricsAvailable } = useMetrics();
+  const { latest, queryMetricsAvailable, realPlanShmemAvailable } = useMetrics();
+  // Live query plan tree needs both: queryMetricsAvailable for live per-node
+  // row counts, realPlanShmemAvailable (whpg_plan_tree extension) for the
+  // real tree structure. Without the extension there's no real tree to
+  // show, and an EXPLAIN-guessed one isn't offered as a substitute.
+  const canWatchQueries = queryMetricsAvailable && realPlanShmemAvailable;
   const [connections, setConnections] = useState<ActivityConnection[]>([]);
   const [summary, setSummary] = useState<ActivitySummary | null>(null);
   const [blocked, setBlocked] = useState<Record<string, unknown>[]>([]);
@@ -326,7 +331,7 @@ export default function Activity() {
                     onCancel={() => setConfirmAction({ pid: conn.pid, action: 'cancel' })}
                     onTerminate={() => setConfirmAction({ pid: conn.pid, action: 'terminate' })}
                     onWatch={() => setWatchTarget({ pid: conn.pid, sql: conn.query })}
-                    canWatch={queryMetricsAvailable}
+                    canWatch={canWatchQueries}
                   />
                 );
               })}

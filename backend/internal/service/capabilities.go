@@ -39,13 +39,15 @@ type Capabilities struct {
 	// installed (session_state.session_level_memory_consumption view).
 	SessionMemoryStats bool
 
-	// RealPlanShmem is true when the connected kernel captures the real,
-	// already-planned tree into shmem at execution start (GpCapturePlanShmem,
-	// planshmem.c — a WHPG-only kernel feature, not present on stock GPDB).
-	// When true, the watch endpoint can build the plan-node tree from
-	// query_metrics.gp_plan_shmem_detail (real plan_node_id, real parent/
-	// child, no re-EXPLAIN, no client-side node-numbering) instead of the
-	// EXPLAIN-based fallback every other capability level uses.
+	// RealPlanShmem is true when the connected server has the standalone
+	// whpg_plan_tree extension installed (CREATE EXTENSION whpg_plan_tree;
+	// zero core changes required — portable across WHPG7/GPDB7, Cloudberry,
+	// and WHPG19-next; see ~/work/whpg_plan_tree). When true, the watch
+	// endpoint can build the plan-node tree from plan_tree.plan_tree_detail
+	// (real plan_node_id, real parent/child, no re-EXPLAIN, no client-side
+	// node-numbering). When false, the live query plan tree feature is
+	// hidden entirely rather than falling back to an EXPLAIN-based
+	// reconstruction — see handler/instrumentation.go.
 	RealPlanShmem bool
 }
 
@@ -108,7 +110,7 @@ func detectCapabilities(ctx context.Context, pool *pgxpool.Pool) (*Capabilities,
 			COALESCE((SELECT setting = 'on' FROM pg_settings WHERE name = 'gp_enable_query_metrics'), false),
 			to_regclass('query_metrics.gp_instrument_shmem_detail') IS NOT NULL,
 			to_regclass('session_state.session_level_memory_consumption') IS NOT NULL,
-			to_regclass('query_metrics.gp_plan_shmem_detail') IS NOT NULL
+			to_regclass('plan_tree.plan_tree_detail') IS NOT NULL
 	`).Scan(&queryMetricsGUCOn, &instrumentViewExists, &memoryViewExists, &planShmemViewExists)
 	if err != nil {
 		return nil, fmt.Errorf("detectCapabilities: %w", err)

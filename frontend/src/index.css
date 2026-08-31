@@ -17,3 +17,19 @@ body {
 #root {
   min-height: 100vh;
 }
+
+/* PlanGraph: indeterminate "still running, % unknown" fill — a moving
+   diagonal-stripe sweep, same visual language a browser's own progress
+   bar uses for indeterminate state. */
+@keyframes pg-shimmer {
+  from { background-position: 0 0; }
+  to { background-position: 40px 0; }
+}
+.pg-shimmer {
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(16, 185, 129, 0.35) 0, rgba(16, 185, 129, 0.35) 10px,
+    rgba(16, 185, 129, 0.15) 10px, rgba(16, 185, 129, 0.15) 20px
+  );
+  animation: pg-shimmer 1.2s linear infinite;
+}

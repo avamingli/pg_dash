@@ -28,6 +28,13 @@ func queryProgressHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager
 		}
 		sql := r.URL.Query().Get("sql")
 
+		// The live query plan tree needs both capabilities: QueryMetrics for
+		// the live per-node row counts (gp_instrument_shmem_detail) and
+		// RealPlanShmem for the real tree structure itself
+		// (plan_tree_detail). Deliberately refusing the whole endpoint
+		// rather than degrading to an EXPLAIN-based reconstruction when only
+		// one is present — a guessed tree isn't the query that's actually
+		// running, so the feature is either fully available or hidden.
 		caps := connMgr.GetCapabilities()
 		if !caps.QueryMetrics {
 			writeError(w, http.StatusServiceUnavailable,
@@ -35,6 +42,14 @@ func queryProgressHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager
 					"hasn't been set up. One-time setup:\n"+
 					"1. gpconfig -c gp_enable_query_metrics -v on && gpstop -raf\n"+
 					"2. Run this SQL once:\n"+query.InstrumentationSetupDDL)
+			return
+		}
+		if !caps.RealPlanShmem {
+			writeError(w, http.StatusServiceUnavailable,
+				"the whpg_plan_tree extension is not installed. One-time setup:\n"+
+					"1. gpconfig -c shared_preload_libraries -v whpg_plan_tree --skipvalidation && gpstop -raf\n"+
+					"   (append to any existing shared_preload_libraries value instead, if one is set)\n"+
+					"2. CREATE EXTENSION whpg_plan_tree;")
 			return
 		}
 
@@ -74,16 +89,11 @@ func queryProgressHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager
 			}
 		}
 
-		// RealPlanShmem (WHPG-only kernel feature): the real plan tree,
-		// keyed by the true plan_node_id — lets the client skip re-running
-		// EXPLAIN and re-deriving node numbering entirely. Absent on any
-		// server without GpCapturePlanShmem; the client falls back to its
-		// EXPLAIN-based reconstruction when "plan" isn't present.
-		if caps.RealPlanShmem {
-			plan, err := queryRows(ctx, pool, query.PlanShmemDetailForSession, sessID)
-			if err == nil {
-				result["plan"] = plan
-			}
+		// The real plan tree, keyed by the true plan_node_id — already
+		// required (caps.RealPlanShmem checked above), so this always runs.
+		plan, err := queryRows(ctx, pool, query.PlanTreeDetailForSession, sessID)
+		if err == nil {
+			result["plan"] = plan
 		}
 
 		writeJSON(w, result)

@@ -269,6 +269,12 @@ export interface ServerInfo {
   settings: ServerSetting[];
   cluster_info?: ClusterInfo;
   query_metrics_available?: boolean;
+  // True when the standalone whpg_plan_tree extension is installed (see
+  // Capabilities.RealPlanShmem on the backend) — the real, kernel-captured
+  // plan tree, portable across WHPG7/GPDB7, Cloudberry, and WHPG19-next.
+  // The live query plan tree feature is hidden entirely (not degraded to
+  // an EXPLAIN-based guess) when this is false.
+  real_plan_shmem_available?: boolean;
 }
 
 export interface ServerSetting {
@@ -366,11 +372,12 @@ export interface QueryProgressMemory {
   vmem_mb: number;
 }
 
-// One row per (segment, plan node) from WHPG's GpCapturePlanShmem
-// (query_metrics.gp_plan_shmem_detail) — the real plan tree, keyed by the
-// true plan_node_id. Only present when the connected server has the
-// feature (Capabilities.RealPlanShmem); absent everywhere else, in which
-// case the client falls back to its EXPLAIN-based tree reconstruction.
+// One row per (segment, plan node) from the whpg_plan_tree extension's
+// CapturePlanTree (plan_tree.plan_tree_detail) — the real plan tree, keyed
+// by the true plan_node_id. Only present when the connected server has the
+// extension installed (Capabilities.RealPlanShmem); the live query plan
+// tree feature is hidden entirely, not degraded to an EXPLAIN-based guess,
+// when it's absent — see QueryWatchPanel/Activity's canWatchQueries gate.
 export interface QueryProgressPlanNode {
   segid: number;
   pid: number;

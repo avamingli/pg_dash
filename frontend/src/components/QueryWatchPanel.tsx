@@ -33,6 +33,28 @@ function aggregateByNode(nodes: QueryProgressNode[]): Record<number, LiveNodeSta
   return result;
 }
 
+// gp_instrument_shmem_detail's row for a plan node vanishes the instant that
+// node's slot recycles — normal for a node that finishes well before the
+// whole query does (e.g. a Seq Scan feeding a Hash Join that's still
+// building its table). Blindly replacing liveNodes with whatever the latest
+// poll returns read as that node's progress reverting to 0 the moment it
+// actually finished. Merge instead: a nid missing from the latest poll keeps
+// its last known stats, and a nid present in both never goes backwards.
+function mergeLiveNodes(
+  prev: Record<number, LiveNodeStats>,
+  next: Record<number, LiveNodeStats>,
+): Record<number, LiveNodeStats> {
+  const merged: Record<number, LiveNodeStats> = { ...prev };
+  for (const [key, stats] of Object.entries(next)) {
+    const nid = Number(key);
+    const existing = merged[nid];
+    merged[nid] = existing
+      ? { rows: Math.max(existing.rows, stats.rows), segments: Math.max(existing.segments, stats.segments) }
+      : stats;
+  }
+  return merged;
+}
+
 // The EXPLAIN-based fallback and WHPG's real plan-shmem capture are two
 // independent round trips (see the two effects below); on a server that
 // has the real capture, it's normal for /progress to resolve slightly
@@ -73,7 +95,7 @@ export default function QueryWatchPanel({ pid, sql, onClose }: QueryWatchPanelPr
     api.getQueryProgress(pid, sql)
       .then(progress => {
         // The shmem slots this reads (gp_instrument_shmem_detail /
-        // gp_plan_shmem_detail) recycle the instant the query's backend
+        // plan_tree_detail) recycle the instant the query's backend
         // resource owner releases — i.e. right as it finishes — so the
         // very next poll after completion comes back empty, not 404. Treat
         // that the same as the 404 case below: stop polling and freeze on
@@ -83,7 +105,7 @@ export default function QueryWatchPanel({ pid, sql, onClose }: QueryWatchPanelPr
           if (pollRef.current) clearInterval(pollRef.current);
           return;
         }
-        setLiveNodes(aggregateByNode(progress.nodes));
+        setLiveNodes(prev => mergeLiveNodes(prev, aggregateByNode(progress.nodes)));
         if (progress.memory && progress.memory.length > 0) {
           setMemoryMb(progress.memory.reduce((sum, m) => sum + m.vmem_mb, 0));
         }
@@ -157,7 +179,7 @@ export default function QueryWatchPanel({ pid, sql, onClose }: QueryWatchPanelPr
           {planError && !hasRealPlan && explainGraceElapsed ? (
             <p className="text-sm text-red-400 p-4">{planError}</p>
           ) : hasRealPlan || (explainGraceElapsed && plan) ? (
-            <PlanViewer plan={plan} liveNodes={liveNodes} realPlan={realPlan} />
+            <PlanViewer plan={plan} liveNodes={liveNodes} realPlan={realPlan} finished={finished} />
           ) : (
             <p className="text-sm text-zinc-500 p-4">Loading plan...</p>
           )}
