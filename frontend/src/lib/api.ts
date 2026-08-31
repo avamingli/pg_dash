@@ -104,8 +104,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ sql, analyze, buffers, database }),
     }),
-  getQueryProgress: (pid: number) =>
-    request<QueryProgress>(`/api/queries/${pid}/progress`),
+  getQueryProgress: (pid: number, sql?: string) =>
+    request<QueryProgress>(`/api/queries/${pid}/progress${sql ? `?sql=${encodeURIComponent(sql)}` : ''}`),
   resetStatements: () =>
     request<{ status: string }>('/api/statements/reset', { method: 'POST' }),
 

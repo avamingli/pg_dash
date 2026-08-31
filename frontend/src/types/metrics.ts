@@ -366,11 +366,36 @@ export interface QueryProgressMemory {
   vmem_mb: number;
 }
 
+// One row per (segment, plan node) from WHPG's GpCapturePlanShmem
+// (query_metrics.gp_plan_shmem_detail) — the real plan tree, keyed by the
+// true plan_node_id. Only present when the connected server has the
+// feature (Capabilities.RealPlanShmem); absent everywhere else, in which
+// case the client falls back to its EXPLAIN-based tree reconstruction.
+export interface QueryProgressPlanNode {
+  segid: number;
+  pid: number;
+  nid: number;
+  parent_nid: number;
+  node_type: string;
+  parallel_aware: boolean;
+  strategy: string | null;
+  partial_mode: string | null;
+  operation: string | null;
+  motion_senders: number | null;
+  motion_receivers: number | null;
+  relname: string | null;
+  plan_rows: number;
+  startup_cost: number;
+  total_cost: number;
+  plan_width: number;
+}
+
 export interface QueryProgress {
   pid: number;
   sess_id: number;
   nodes: QueryProgressNode[];
   memory?: QueryProgressMemory[];
+  plan?: QueryProgressPlanNode[];
 }
 
 // ── Checkpoint ──

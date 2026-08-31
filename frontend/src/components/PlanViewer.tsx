@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ChevronRight, ChevronDown } from 'lucide-react';
+import type { QueryProgressPlanNode } from '@/types/metrics';
 
 // ── Types ──
 
@@ -37,6 +38,13 @@ interface PlanNode {
   'Segments'?: number;
   'Senders'?: number;
   'Receivers'?: number;
+  /**
+   * Only set when this tree was built from the real WHPG plan-shmem
+   * capture (buildRealPlanTree), not from parsing EXPLAIN JSON — the true
+   * plan_node_id, no assignNodeIds guessing needed. See PlanNodeView's nid
+   * lookup, which prefers this over the assignNodeIds-derived Map.
+   */
+  Nid?: number;
   Plans?: PlanNode[];
   [key: string]: unknown;
 }
@@ -57,8 +65,19 @@ interface PlanViewerProps {
    * children) and GPORCA's translator, which numbers one specific shape of
    * join differently — see assignNodeIds' own comment. Verified against
    * live clusters for both; may still drift for subplans/CTEs.
+   *
+   * Unused (nid comes straight off each node instead) when realPlan is
+   * provided and non-empty.
    */
   liveNodes?: Record<number, LiveNodeStats>;
+  /**
+   * WHPG's real plan-shmem capture, when the connected server has it
+   * (Capabilities.RealPlanShmem) — the true tree the kernel captured at
+   * query start, not a reconstruction from a fresh EXPLAIN. Takes priority
+   * over `plan` for tree structure when present and non-empty; `plan` is
+   * still used for the Optimizer badge and the "Raw JSON" toggle.
+   */
+  realPlan?: QueryProgressPlanNode[];
 }
 
 const INDEX_NLJ_INNER_TYPES = new Set([
@@ -103,6 +122,61 @@ export function assignNodeIds(root: PlanNode, isORCA: boolean): Map<PlanNode, nu
   }
   visit(root);
   return ids;
+}
+
+/**
+ * Builds a PlanNode tree straight from WHPG's real plan-shmem capture
+ * (query_metrics.gp_plan_shmem_detail, one row per segment per node) —
+ * the actual plan_node_id/parent/label the kernel captured when the query
+ * started, not a guess reconstructed from a fresh EXPLAIN. Field names on
+ * the resulting PlanNode deliberately match what parsePlan produces from
+ * EXPLAIN JSON, so nodeLabel/nodeColor/PlanNodeView don't need to know
+ * which source they're rendering.
+ *
+ * Rows arrive once per segment, but the structure itself (nid/parent_nid/
+ * node_type/...) is identical across every segment that ran below the
+ * same slice — the QD's own rows are the only ones that also cover the
+ * QD-only nodes above the top Motion, so they're preferred wherever a nid
+ * appears on both.
+ */
+export function buildRealPlanTree(rows: QueryProgressPlanNode[]): PlanNode | null {
+  if (!rows || rows.length === 0) return null;
+
+  const byNid = new Map<number, QueryProgressPlanNode>();
+  for (const row of rows) {
+    if (!byNid.has(row.nid) || row.segid === -1) byNid.set(row.nid, row);
+  }
+
+  const nodes = new Map<number, PlanNode>();
+  for (const [nid, row] of byNid) {
+    nodes.set(nid, {
+      'Node Type': row.node_type,
+      'Relation Name': row.relname ?? undefined,
+      'Plan Rows': row.plan_rows,
+      'Startup Cost': row.startup_cost,
+      'Total Cost': row.total_cost,
+      'Plan Width': row.plan_width,
+      'Strategy': row.strategy ?? undefined,
+      'Partial Mode': row.partial_mode ?? undefined,
+      'Operation': row.operation ?? undefined,
+      'Parallel Aware': row.parallel_aware,
+      'Senders': row.motion_senders ?? undefined,
+      'Receivers': row.motion_receivers ?? undefined,
+      Nid: nid,
+      Plans: [],
+    });
+  }
+
+  let root: PlanNode | null = null;
+  for (const [nid, row] of byNid) {
+    const node = nodes.get(nid)!;
+    if (row.parent_nid < 0 || !nodes.has(row.parent_nid)) {
+      root = node; // parent_nid is -1 for the true root on every capturing process
+    } else {
+      nodes.get(row.parent_nid)!.Plans!.push(node);
+    }
+  }
+  return root;
 }
 
 // ── Helpers ──
@@ -237,13 +311,19 @@ function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes }: {
   nodeIds?: Map<PlanNode, number>;
   liveNodes?: Record<number, LiveNodeStats>;
 }) {
-  const [open, setOpen] = useState(depth < 3);
+  // Default every node expanded — this is a monitoring view where the
+  // point is seeing every node's live progress at a glance, not a deeply
+  // nested EXPLAIN browser where collapsing saves space; a real join
+  // query's interesting nodes (joins, scans) usually sit past depth 3
+  // anyway, and re-expanding them by hand on every fresh Watch was exactly
+  // the complaint.
+  const [open, setOpen] = useState(true);
   const hasChildren = node.Plans && node.Plans.length > 0;
   const actualTime = getTotalTime(node);
   const timePct = rootTime > 0 ? (actualTime / rootTime * 100) : 0;
   const ratio = rowEstimateRatio(node);
   const color = nodeColor(node, rootTime);
-  const nid = nodeIds?.get(node);
+  const nid = node.Nid ?? nodeIds?.get(node);
   const live = nid != null ? liveNodes?.[nid] : undefined;
   const estRows = node['Plan Rows'];
   // Plan Rows is GPDB's per-segment estimate for a distributed node, but
@@ -382,11 +462,12 @@ function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes }: {
   );
 }
 
-export default function PlanViewer({ plan, liveNodes }: PlanViewerProps) {
+export default function PlanViewer({ plan, liveNodes, realPlan }: PlanViewerProps) {
   const [showRaw, setShowRaw] = useState(false);
-  const root = parsePlan(plan);
+  const usingRealPlan = !!realPlan && realPlan.length > 0;
+  const root = usingRealPlan ? buildRealPlanTree(realPlan!) : parsePlan(plan);
   const isORCA = parseOptimizer(plan) === 'GPORCA';
-  const nodeIds = root ? assignNodeIds(root, isORCA) : undefined;
+  const nodeIds = !usingRealPlan && root ? assignNodeIds(root, isORCA) : undefined;
 
   if (!root) {
     return (
@@ -406,6 +487,15 @@ export default function PlanViewer({ plan, liveNodes }: PlanViewerProps) {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4 text-xs text-zinc-500">
           <span>Total Time: <span className="text-white font-mono">{formatMs(rootTime)}</span></span>
+          {usingRealPlan && (
+            <span
+              className="flex items-center gap-1.5 text-emerald-400"
+              title="Structure captured by WHPG's GpCapturePlanShmem at query start — not reconstructed from a fresh EXPLAIN"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+              real plan
+            </span>
+          )}
           <span className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> Estimate error ({'>'}10x)
           </span>

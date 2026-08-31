@@ -177,7 +177,13 @@ export default function SQLEditor() {
         clearInterval(pidPollRefs.current[tabId]);
         delete pidPollRefs.current[tabId];
       }
-      updateTab(tabId, { running: false, watchPid: null, showWatchPanel: false });
+      // Deliberately leave showWatchPanel AND watchPid alone: the panel's
+      // own render condition below is `showWatchPanel && watchPid != null`,
+      // so clearing watchPid here unmounts it just as surely as forcing
+      // showWatchPanel to false would — either one undoes "stay open until
+      // I close it myself". The toolbar's own Watch button already keys
+      // off `running` too, so it still disappears correctly on its own.
+      updateTab(tabId, { running: false });
     }
   }, [activeTabId, tabs, explain, readOnly, database, queryMetricsAvailable]);
 
