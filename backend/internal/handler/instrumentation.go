@@ -26,6 +26,7 @@ func queryProgressHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager
 			writeError(w, http.StatusBadRequest, "invalid pid")
 			return
 		}
+		sql := r.URL.Query().Get("sql")
 
 		caps := connMgr.GetCapabilities()
 		if !caps.QueryMetrics {
@@ -39,8 +40,17 @@ func queryProgressHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager
 
 		ctx := r.Context()
 
+		// If the caller tells us which SQL it's watching, also verify that
+		// pid is still actively running it — a bare pid match isn't enough
+		// once the connection can be handed back to pg_dash's own pool and
+		// picked up by an unrelated query (see SessIDForPidRunning).
+		sessIDQuery, args := query.SessIDForPid, []any{pid}
+		if sql != "" {
+			sessIDQuery, args = query.SessIDForPidRunning, []any{pid, sql}
+		}
+
 		var sessID int
-		if err := pool.QueryRow(ctx, query.SessIDForPid, pid).Scan(&sessID); err != nil {
+		if err := pool.QueryRow(ctx, sessIDQuery, args...).Scan(&sessID); err != nil {
 			writeError(w, http.StatusNotFound, "no active backend with that pid")
 			return
 		}

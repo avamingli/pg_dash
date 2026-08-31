@@ -44,7 +44,10 @@ SELECT
     motion_senders,
     motion_receivers,
     relname,
-    plan_rows
+    plan_rows,
+    startup_cost,
+    total_cost,
+    plan_width
 FROM query_metrics.gp_plan_shmem_detail
 WHERE ssid = $1
   AND ccnt = (SELECT max(ccnt) FROM query_metrics.gp_plan_shmem_detail WHERE ssid = $1)
@@ -54,6 +57,18 @@ ORDER BY segid, nid`
 // InstrumentationDetailForSession/SessionMemoryForSession filter on.
 // $1 = pid.
 const SessIDForPid = `SELECT sess_id FROM pg_stat_activity WHERE pid = $1`
+
+// SessIDForPidRunning is SessIDForPid plus a check that the backend is
+// still running the exact query the caller started watching. Without
+// this, once the watched query finishes, its pooled connection goes back
+// to pg_dash's own connection pool and can be picked up by a completely
+// unrelated query within one poll interval (including pg_dash's own
+// periodic collector queries) — a bare pid match would then happily
+// return that unrelated query's live nodes/plan as if they belonged to
+// the original one. $1 = pid, $2 = the exact SQL text being watched.
+const SessIDForPidRunning = `
+SELECT sess_id FROM pg_stat_activity
+WHERE pid = $1 AND state = 'active' AND query = $2`
 
 // SessionMemoryForSession returns live per-segment memory usage (MB) for one
 // session, from gp_internal_tools' session_state.session_level_memory_consumption
