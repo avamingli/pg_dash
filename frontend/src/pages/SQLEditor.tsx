@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import {
   Play, FileText, Download, Clock, AlertTriangle,
-  ChevronLeft, ChevronRight, Plus, X, Shield, ShieldOff, Database, Eye,
+  ChevronLeft, ChevronRight, Plus, X, Shield, ShieldOff, Database, Eye, XCircle,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useMetrics } from '@/contexts/MetricsContext';
@@ -96,6 +96,8 @@ export default function SQLEditor() {
   // One pid-discovery poll timer per tab, keyed by tab id.
   const pidPollRefs = useRef<Record<number, ReturnType<typeof setInterval>>>({});
 
+  const [cancelling, setCancelling] = useState(false);
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const activeTab = tabs.find(t => t.id === activeTabId) ?? tabs[0];
@@ -170,7 +172,11 @@ export default function SQLEditor() {
     updateTab(tabId, { running: true, result: null, explainResult: null, error: '', page: 0 });
     const start = performance.now();
 
-    if (!explain && canWatchQueries) {
+    // Needed for Cancel regardless of whether the Watch feature itself is
+    // available (canWatchQueries) — a query the user wants to abort isn't
+    // conditional on whether the live-plan capability exists on this
+    // server, so this must not be gated on it too.
+    if (!explain) {
       startPidDiscovery(tabId, sql);
     }
 
@@ -205,6 +211,26 @@ export default function SQLEditor() {
       updateTab(tabId, { running: false });
     }
   }, [activeTabId, tabs, explain, readOnly, database, canWatchQueries]);
+
+  // Sends pg_cancel_backend at the discovered pid — the same endpoint
+  // Activity Monitor's own Cancel action uses. This aborts the query
+  // server-side; `execute`'s in-flight request then resolves with the
+  // resulting "canceling statement due to user request" error on its own
+  // (no separate "stop waiting" here), which is what flips `running` back
+  // to false and records it in history like any other failed query.
+  async function cancelRunning() {
+    const pid = activeTab.watchPid;
+    if (pid == null) return;
+    setCancelling(true);
+    try {
+      await api.cancelBackend(pid);
+    } catch {
+      // Best-effort — if the backend already finished or moved on to a
+      // different query, there's nothing left to cancel.
+    } finally {
+      setCancelling(false);
+    }
+  }
 
   // Ctrl+Enter
   useEffect(() => {
@@ -311,10 +337,17 @@ export default function SQLEditor() {
           </div>
 
           <div className="ml-auto flex items-center gap-2">
-            {activeTab.running && activeTab.watchPid != null && (
+            {activeTab.running && activeTab.watchPid != null && canWatchQueries && (
               <button onClick={() => updateTab(activeTabId, { showWatchPanel: true })}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40 transition-colors animate-pulse">
                 <Eye size={12} /> Watch (pid {activeTab.watchPid})
+              </button>
+            )}
+            {activeTab.running && activeTab.watchPid != null && (
+              <button onClick={cancelRunning} disabled={cancelling}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/40 transition-colors disabled:opacity-50"
+                title={`Cancel query (pid ${activeTab.watchPid})`}>
+                <XCircle size={12} /> {cancelling ? 'Cancelling...' : 'Cancel'}
               </button>
             )}
             {activeTab.duration != null && (
