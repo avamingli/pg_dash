@@ -33,3 +33,26 @@ body {
   );
   animation: pg-shimmer 1.2s linear infinite;
 }
+
+/* PlanGraph: "data flowing" edges -- a marching-ants dash animation on the
+   arrow feeding into a currently-live (still running) node, so the edge
+   itself reads as "rows are moving through here right now" rather than
+   the destination node's own fill being the only sign of life. */
+@keyframes pg-edge-flow {
+  to { stroke-dashoffset: -16; }
+}
+.pg-edge-flow {
+  stroke-dasharray: 5 5;
+  animation: pg-edge-flow 0.6s linear infinite;
+}
+
+/* PlanGraph: soft glow around a node that's actively producing rows right
+   now -- a second, larger, blurred shadow layer so "this one's live" reads
+   at a glance before you even look at its liquid-fill percentage. */
+@keyframes pg-glow-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+.pg-glow {
+  animation: pg-glow-pulse 1.8s ease-in-out infinite;
+}

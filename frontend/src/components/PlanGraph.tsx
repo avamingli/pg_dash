@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Table2, GitMerge, Sigma, Share2, ArrowUpDown, Filter, Layers, Box,
+  Table2, GitMerge, Sigma, Share2, ArrowUpDown, Layers, Box,
   ZoomIn, ZoomOut, Maximize2, RotateCcw, Expand, Minimize2, X,
+  ScanSearch, FileSearch, Grid2x2, Rows3, Rows4, Crosshair, Dice5, FunctionSquare,
+  List, Bookmark, RefreshCcw, Layers2, Globe, Hash, Repeat2, ListOrdered, Combine,
+  AppWindow, Boxes, Fingerprint, Scissors, Users, Save, BookmarkCheck, SquareStack,
+  Layers3, Calculator, FilePlus2, FilePen, FileX2, Lock, Merge, Shuffle, RadioTower,
+  Route,
 } from 'lucide-react';
 import {
   type PlanNode, type LiveNodeStats, type SliceSummary,
@@ -44,15 +49,112 @@ function layoutTree(root: PlanNode): { layout: LayoutNode; leafCount: number; ma
   return { layout, leafCount: Math.max(leafCounter, 1), maxDepth };
 }
 
-function nodeIcon(label: string) {
-  if (label.includes('Scan')) return Table2;
-  if (label.includes('Join') || label.includes('Nested Loop')) return GitMerge;
-  if (label.includes('Aggregate')) return Sigma;
-  if (label.includes('Motion')) return Share2;
-  if (label.includes('Sort')) return ArrowUpDown;
-  if (label.includes('Append') || label.includes('Sequence')) return Layers;
-  if (label.includes('Limit') || label.includes('Unique') || label.includes('SetOp')) return Filter;
-  return Box;
+// One icon per real plan node kind, not a generic "Scan"/"Join"/"Motion"
+// bucket — picked so the shape itself hints at what the node actually does:
+// Shuffle for a Redistribute Motion (rows get reshuffled across segments),
+// RadioTower for Broadcast (one sender, every segment tuned in), Hash for
+// a Hash Join, Fingerprint for Unique, Scissors for Limit, and so on.
+// Matches against the raw "Node Type" (plus Strategy/Operation for the few
+// node kinds EXPLAIN JSON only disambiguates that way), not nodeLabel()'s
+// already-decorated string (which has "Parallel "/" N:M" mixed in).
+function nodeIcon(node: PlanNode) {
+  const type = node['Node Type'];
+  switch (type) {
+    // GPDB Motion — each kind gets a shape that actually suggests its job.
+    case 'Gather Motion': return Merge;
+    case 'Redistribute Motion': return Shuffle;
+    case 'Broadcast Motion': return RadioTower;
+    case 'Explicit Motion': return Route;
+
+    // Joins
+    case 'Hash Join': return Hash;
+    case 'Merge Join': return GitMerge;
+    case 'Nested Loop': return Repeat2;
+
+    // Aggregation / grouping
+    case 'Aggregate':
+      if (node['Strategy'] === 'Sorted') return ListOrdered;
+      if (node['Strategy'] === 'Mixed') return Combine;
+      return Sigma; // Hashed, or strategy not captured
+    case 'WindowAgg': return AppWindow;
+    case 'Group': return Boxes;
+
+    // Sort / dedup / limit / set ops
+    case 'Sort': return ArrowUpDown;
+    case 'Unique': return Fingerprint;
+    case 'Limit': return Scissors;
+    case 'SetOp': return Rows3;
+
+    // Parallel workers (plain PostgreSQL parallelism, not a GPDB Motion)
+    case 'Gather':
+    case 'Gather Merge': return Users;
+
+    // Caching
+    case 'Materialize': return Save;
+    case 'Memoize': return BookmarkCheck;
+
+    // Combining sibling subplans
+    case 'Append': return Layers;
+    case 'MergeAppend': return SquareStack;
+    case 'Sequence': return Layers3;
+
+    // Result / row-modifying
+    case 'Result': return Calculator;
+    case 'ModifyTable':
+      if (node['Operation'] === 'Insert') return FilePlus2;
+      if (node['Operation'] === 'Delete') return FileX2;
+      return FilePen; // Update, or operation not captured
+    case 'LockRows': return Lock;
+
+    // Scans
+    case 'Index Only Scan':
+    case 'Dynamic Index Only Scan': return FileSearch;
+    case 'Index Scan':
+    case 'Dynamic Index Scan': return ScanSearch;
+    case 'Bitmap Index Scan': return Rows4;
+    case 'Bitmap Heap Scan':
+    case 'Dynamic Bitmap Heap Scan': return Grid2x2;
+    case 'Tid Scan':
+    case 'Tid Range Scan': return Crosshair;
+    case 'Sample Scan': return Dice5;
+    case 'Function Scan':
+    case 'Table Function Scan': return FunctionSquare;
+    case 'Values Scan': return List;
+    case 'CTE Scan': return Bookmark;
+    case 'WorkTable Scan': return RefreshCcw;
+    case 'Subquery Scan': return Layers2;
+    case 'Foreign Scan':
+    case 'Dynamic Foreign Scan': return Globe;
+
+    default:
+      // Safety net for node kinds not explicitly listed above (a future PG
+      // version's new node type, or a variant this switch missed) — still
+      // groups sensibly by name instead of falling straight to a blank box.
+      if (type?.includes('Bitmap')) return Grid2x2;
+      if (type?.includes('Index')) return ScanSearch;
+      if (type?.includes('Scan')) return Table2;
+      if (type?.includes('Motion')) return Share2;
+      if (type?.includes('Join')) return GitMerge;
+      return Box;
+  }
+}
+
+// Icon badge color by node *category* — a second, independent visual
+// channel from the box border color (which signals live/error/hot-path
+// status): this one answers "what kind of node is this" at a glance,
+// e.g. every Motion reads amber regardless of which one it is, every scan
+// reads sky-blue, etc.
+function nodeCategoryClass(node: PlanNode): string {
+  const type = node['Node Type'] ?? '';
+  if (type.includes('Motion')) return 'bg-amber-500/15 text-amber-400';
+  if (type === 'Gather' || type === 'Gather Merge') return 'bg-amber-500/15 text-amber-400';
+  if (type.includes('Join') || type === 'Nested Loop') return 'bg-violet-500/15 text-violet-400';
+  if (type === 'Aggregate' || type === 'WindowAgg' || type === 'Group') return 'bg-pink-500/15 text-pink-400';
+  if (['Sort', 'Unique', 'Limit', 'SetOp'].includes(type)) return 'bg-teal-500/15 text-teal-400';
+  if (type === 'Materialize' || type === 'Memoize') return 'bg-indigo-500/15 text-indigo-400';
+  if (type === 'ModifyTable' || type === 'LockRows') return 'bg-rose-500/15 text-rose-400';
+  if (type.includes('Scan')) return 'bg-sky-500/15 text-sky-400';
+  return 'bg-zinc-700/40 text-zinc-400';
 }
 
 function flatten(ln: LayoutNode, out: LayoutNode[] = []): LayoutNode[] {
@@ -251,19 +353,32 @@ export default function PlanGraph({
             <marker id="pg-arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
               <path d="M0,0 L10,5 L0,10 z" fill="#52525b" />
             </marker>
+            <marker id="pg-arrow-active" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#10b981" />
+            </marker>
           </defs>
           {allNodes.flatMap(ln => ln.children.map((child, i) => {
             const x1 = px(child.x), y1 = py(child.depth);
             const x2 = px(ln.x), y2 = py(ln.depth) + NODE_H;
             const midY = (y1 + y2) / 2;
+            // Data flows child -> parent (arrows point up, per this
+            // component's own convention) — so an edge reads as "actively
+            // moving" when its *child* end is a live, still-running node,
+            // a marching-ants dash plus an emerald arrowhead instead of
+            // the plain static gray line.
+            const childNid = child.node.Nid ?? nodeIds?.get(child.node);
+            const childLive = childNid != null ? liveNodes?.[childNid] : undefined;
+            const flowing = childLive != null && !finished;
             return (
               <path
                 key={`${ln.node.Nid ?? ln.x}-${i}`}
                 d={`M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`}
                 fill="none"
-                stroke="#52525b"
-                strokeWidth={1.5}
-                markerEnd="url(#pg-arrow)"
+                stroke={flowing ? '#10b981' : '#52525b'}
+                strokeWidth={flowing ? 2 : 1.5}
+                strokeLinecap="round"
+                className={flowing ? 'pg-edge-flow' : undefined}
+                markerEnd={flowing ? 'url(#pg-arrow-active)' : 'url(#pg-arrow)'}
               />
             );
           }))}
@@ -272,7 +387,8 @@ export default function PlanGraph({
         {allNodes.map((ln, i) => {
           const node = ln.node;
           const label = nodeLabel(node);
-          const Icon = nodeIcon(label);
+          const Icon = nodeIcon(node);
+          const categoryClass = nodeCategoryClass(node);
           const nid = node.Nid ?? nodeIds?.get(node);
           const live = nid != null ? liveNodes?.[nid] : undefined;
           const estRows = node['Plan Rows'];
@@ -302,14 +418,24 @@ export default function PlanGraph({
           // jump instead of the smooth 500ms color/height change below.
           const fillPct = pct != null ? Math.min(100, Math.max(4, pct)) : null;
           const showShimmer = fillPct == null && !finished;
+          // Glow is reserved for "healthy and actively running" — an
+          // estimate-error or selected node already has its own strong
+          // border color to carry attention, a second glowing halo on top
+          // would just compete with it instead of adding information.
+          const isRunning = live != null && !finished && ratio <= 10;
 
           return (
             <button
               key={nid ?? i}
               onClick={() => setSelected(node)}
-              className={`absolute rounded-md border ${borderColor} bg-zinc-900 text-left shadow-sm hover:border-blue-400 transition-colors duration-500 overflow-hidden`}
-              style={{ left: px(ln.x) - NODE_W / 2, top: py(ln.depth), width: NODE_W, height: NODE_H }}
+              className={`absolute rounded-lg border ${borderColor} bg-zinc-900 text-left transition-colors duration-500 overflow-hidden ${isSelected ? 'shadow-sm' : ''} hover:border-blue-400`}
+              style={{
+                left: px(ln.x) - NODE_W / 2, top: py(ln.depth), width: NODE_W, height: NODE_H,
+                boxShadow: isRunning ? '0 0 0 1px rgba(16,185,129,0.25), 0 0 16px 2px rgba(16,185,129,0.35)' : undefined,
+              }}
             >
+              {isRunning && <div className="absolute inset-0 rounded-lg pg-glow" style={{ boxShadow: '0 0 20px 4px rgba(16,185,129,0.45)' }} />}
+
               {live != null && (
                 <>
                   <div
@@ -324,7 +450,9 @@ export default function PlanGraph({
               )}
 
               <div className="relative flex items-center gap-1.5 px-2 pt-1.5">
-                <Icon size={12} className="text-zinc-400 shrink-0" />
+                <span className={`p-0.5 rounded ${categoryClass} shrink-0`}>
+                  <Icon size={11} />
+                </span>
                 <span className="text-[11px] font-semibold text-zinc-100 truncate">{label}</span>
               </div>
               <div className="relative px-2 text-[10px] text-zinc-500 truncate">
