@@ -92,7 +92,7 @@ export default function Activity() {
 
   // Confirmation dialogs
   const [confirmAction, setConfirmAction] = useState<{ pid: number; action: 'cancel' | 'terminate' } | null>(null);
-  const [watchTarget, setWatchTarget] = useState<{ pid: number; sql: string } | null>(null);
+  const [watchTarget, setWatchTarget] = useState<{ pid: number; sql: string; queryStart: string | null } | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
 
   // Fetch data
@@ -330,7 +330,7 @@ export default function Activity() {
                     onToggle={() => setExpandedPid(isExpanded ? null : conn.pid)}
                     onCancel={() => setConfirmAction({ pid: conn.pid, action: 'cancel' })}
                     onTerminate={() => setConfirmAction({ pid: conn.pid, action: 'terminate' })}
-                    onWatch={() => setWatchTarget({ pid: conn.pid, sql: conn.query })}
+                    onWatch={() => setWatchTarget({ pid: conn.pid, sql: conn.query, queryStart: conn.query_start })}
                     canWatch={canWatchQueries}
                   />
                 );
@@ -463,6 +463,7 @@ export default function Activity() {
         <QueryWatchPanel
           pid={watchTarget.pid}
           sql={watchTarget.sql}
+          queryStart={watchTarget.queryStart}
           onClose={() => setWatchTarget(null)}
         />
       )}

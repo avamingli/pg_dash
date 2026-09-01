@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ChevronRight, ChevronDown } from 'lucide-react';
 import type { QueryProgressPlanNode } from '@/types/metrics';
 import {
-  type PlanNode, type LiveNodeStats,
+  type PlanNode, type LiveNodeStats, type SliceSummary,
   assignNodeIds, buildRealPlanTree, parsePlan, parseOptimizer,
   getTotalTime, getRootTotalTime, rowEstimateRatio, nodeColor, formatMs,
   nodeLabel, sliceLabel, estimateCompletionPct,
@@ -39,6 +39,10 @@ interface PlanViewerProps {
   finished?: boolean;
   /** Passed through to the Graph view's scroll container height. */
   graphMaxHeight?: number;
+  /** Passed straight through to the Graph view — see PlanGraphProps' own comment for why it renders there and not as a sibling. */
+  sliceSummaries?: SliceSummary[];
+  runTimeMs?: number;
+  estProgressPct?: number | null;
 }
 
 // ── Components ──
@@ -202,7 +206,7 @@ function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes, finished }: {
 
 type ViewMode = 'graph' | 'tree' | 'raw';
 
-export default function PlanViewer({ plan, liveNodes, realPlan, finished, graphMaxHeight }: PlanViewerProps) {
+export default function PlanViewer({ plan, liveNodes, realPlan, finished, graphMaxHeight, sliceSummaries, runTimeMs, estProgressPct }: PlanViewerProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('graph');
   const usingRealPlan = !!realPlan && realPlan.length > 0;
   const root = usingRealPlan ? buildRealPlanTree(realPlan!) : parsePlan(plan);
@@ -268,7 +272,10 @@ export default function PlanViewer({ plan, liveNodes, realPlan, finished, graphM
           {typeof plan === 'string' ? plan : JSON.stringify(plan, null, 2)}
         </pre>
       ) : viewMode === 'graph' ? (
-        <PlanGraph root={root} rootTime={rootTime} nodeIds={nodeIds} liveNodes={liveNodes} finished={finished} maxHeight={graphMaxHeight} />
+        <PlanGraph
+          root={root} rootTime={rootTime} nodeIds={nodeIds} liveNodes={liveNodes} finished={finished} maxHeight={graphMaxHeight}
+          sliceSummaries={sliceSummaries} runTimeMs={runTimeMs} estProgressPct={estProgressPct}
+        />
       ) : (
         <div className="p-4">
           <PlanNodeView node={root} depth={0} rootTime={rootTime} nodeIds={nodeIds} liveNodes={liveNodes} finished={finished} />

@@ -239,6 +239,125 @@ export function nodeColor(node: PlanNode, rootTime: number): string {
   return 'border-zinc-700 bg-zinc-900/50';
 }
 
+// ── Slice grouping & timing (Watch panel's left-side summary) ──
+
+/**
+ * Assigns each node a 1-indexed slice id, mirroring how GPDB's own EXPLAIN
+ * labels a Motion node with the slice number of the data feeding *into* it
+ * (e.g. "Redistribute Motion 3:3 (slice2; segments: 3)"): the root's home
+ * slice is 1, and each Motion node encountered while walking down starts a
+ * fresh slice for itself and everything below it. Verified against a live
+ * WarehousePG EXPLAIN's own slice numbers for a two-slice plan (a root
+ * Gather Motion = slice1, a Redistribute Motion further down = slice2).
+ * Motion detection is the "Motion" substring in Node Type, which both
+ * EXPLAIN JSON and the real whpg_plan_tree capture already use as the
+ * label (e.g. "Gather Motion", "Redistribute Motion") — no NodeTag needed.
+ */
+export function computeSliceIds(root: PlanNode): Map<PlanNode, number> {
+  const ids = new Map<PlanNode, number>();
+  let counter = 0;
+  function visit(node: PlanNode, currentSlice: number) {
+    const slice = (currentSlice === 0 || node['Node Type']?.includes('Motion'))
+      ? ++counter
+      : currentSlice;
+    ids.set(node, slice);
+    (node.Plans ?? []).forEach(c => visit(c, slice));
+  }
+  visit(root, 0);
+  return ids;
+}
+
+/** Flattens a per-node slice-id map down to per-nid, to match against live per-node stats (keyed by nid, not by node object). */
+export function sliceIdsByNid(root: PlanNode, sliceIds: Map<PlanNode, number>): Map<number, number> {
+  const out = new Map<number, number>();
+  function visit(node: PlanNode) {
+    if (node.Nid != null) out.set(node.Nid, sliceIds.get(node) ?? 1);
+    (node.Plans ?? []).forEach(visit);
+  }
+  visit(root);
+  return out;
+}
+
+export interface SliceTiming {
+  /** Accumulated wall-clock ms each slice has been "active" — see advanceSliceTiming. */
+  activeMs: Record<number, number>;
+  /** Each nid's row count as of the last poll — advanceSliceTiming's own bookkeeping, not for display. */
+  rawRows: Record<number, number>;
+}
+
+export const EMPTY_SLICE_TIMING: SliceTiming = { activeMs: {}, rawRows: {} };
+
+/**
+ * No per-node timing is captured anywhere (see whpg_plan_tree's own
+ * motion_senders/motion_receivers comment — this project doesn't have real
+ * per-slice CPU/wall time any more than it has real segment counts), so
+ * "how long has this slice been running" is approximated the same way the
+ * rest of this Watch feature approximates progress: by observing it from
+ * outside, one poll at a time. A slice counts as active for a given
+ * interval if at least one of its nodes' row counts grew since the last
+ * poll; the interval's wall-clock length gets added to that slice's total.
+ * A slice that finished producing rows early (its nodes' counts stop
+ * changing) naturally stops accumulating, even while sibling slices or the
+ * query as a whole keep running.
+ */
+export function advanceSliceTiming(
+  prev: SliceTiming,
+  freshByNode: Record<number, LiveNodeStats>,
+  nidToSlice: Map<number, number>,
+  dtMs: number,
+): SliceTiming {
+  const activeSlices = new Set<number>();
+  for (const [nidStr, stats] of Object.entries(freshByNode)) {
+    const nid = Number(nidStr);
+    if (stats.rows > (prev.rawRows[nid] ?? 0)) {
+      const sliceId = nidToSlice.get(nid);
+      if (sliceId != null) activeSlices.add(sliceId);
+    }
+  }
+  const activeMs = { ...prev.activeMs };
+  for (const sid of activeSlices) activeMs[sid] = (activeMs[sid] ?? 0) + dtMs;
+
+  const rawRows: Record<number, number> = {};
+  for (const [nidStr, stats] of Object.entries(freshByNode)) rawRows[Number(nidStr)] = stats.rows;
+
+  return { activeMs, rawRows };
+}
+
+export interface SliceSummary {
+  id: number;
+  label: string;
+  activeMs: number;
+  /**
+   * Share of the sum of every slice's own activeMs — deliberately not a
+   * share of the query's total wall-clock duration, since slices run
+   * concurrently (each as its own gang-member process) and can add up to
+   * more or less than that.
+   */
+  pct: number;
+}
+
+export function summarizeSlices(sliceIds: Map<PlanNode, number>, activeMs: Record<number, number>): SliceSummary[] {
+  const ids = [...new Set(sliceIds.values())].sort((a, b) => a - b);
+  const total = ids.reduce((sum, id) => sum + (activeMs[id] ?? 0), 0);
+  return ids.map(id => ({
+    id,
+    label: `Slice ${id}`,
+    activeMs: activeMs[id] ?? 0,
+    pct: total > 0 ? ((activeMs[id] ?? 0) / total) * 100 : 0,
+  }));
+}
+
+/** "Run Time"-style h/m/s formatting for a whole query — unlike formatMs's us/ms/s scale for one node's own time. */
+export function formatDuration(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
 export function formatMs(ms: number): string {
   if (ms < 1) return `${(ms * 1000).toFixed(0)}us`;
   if (ms < 1000) return `${ms.toFixed(2)}ms`;

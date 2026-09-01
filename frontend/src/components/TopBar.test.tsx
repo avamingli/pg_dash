@@ -1,9 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { BrowserRouter } from 'react-router-dom';
 import TopBar from './TopBar';
 
-// Mock MetricsContext
+// Mock MetricsContext. showVersionDetails is true here so these tests can
+// check what the version text actually says once revealed, without also
+// having to click the toggle first in every one of them.
+const toggleVersionDetails = vi.fn();
 vi.mock('@/contexts/MetricsContext', () => ({
   useMetrics: () => ({
     connected: true,
@@ -14,6 +18,8 @@ vi.mock('@/contexts/MetricsContext', () => ({
     },
     history: [],
     send: vi.fn(),
+    showVersionDetails: true,
+    toggleVersionDetails,
   }),
 }));
 
@@ -21,6 +27,9 @@ vi.mock('@/contexts/MetricsContext', () => ({
 const getServerInfo = vi.fn().mockResolvedValue({
   version: 'PostgreSQL 19devel on x86_64',
   uptime: '2 days',
+  user: 'gpadmin',
+  host: '127.0.0.1',
+  port: '5432',
 });
 vi.mock('@/lib/api', () => ({
   api: {
@@ -49,9 +58,9 @@ describe('TopBar', () => {
     expect(screen.getByText('/ 100')).toBeInTheDocument();
   });
 
-  it('renders database name', () => {
+  it('renders the connection string once server info loads', async () => {
     renderTopBar();
-    expect(screen.getByText('postgres')).toBeInTheDocument();
+    expect(await screen.findByText('gpadmin@127.0.0.1:5432')).toBeInTheDocument();
   });
 
   it('labels a WarehousePG cluster by product name, not "Cloudberry"', async () => {
@@ -71,5 +80,11 @@ describe('TopBar', () => {
     renderTopBar();
     expect(await screen.findByText(/WarehousePG 7\.0\.0-beta\.0/)).toBeInTheDocument();
     expect(screen.queryByText(/^Cloudberry/)).not.toBeInTheDocument();
+  });
+
+  it('clicking the eye icon calls toggleVersionDetails', async () => {
+    renderTopBar();
+    await userEvent.click(await screen.findByTitle('Hide version details'));
+    expect(toggleVersionDetails).toHaveBeenCalledTimes(1);
   });
 });

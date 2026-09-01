@@ -5,9 +5,10 @@ import {
   ZoomIn, ZoomOut, Maximize2, RotateCcw, Expand, Minimize2, X,
 } from 'lucide-react';
 import {
-  type PlanNode, type LiveNodeStats,
+  type PlanNode, type LiveNodeStats, type SliceSummary,
   nodeLabel, sliceLabel, rowEstimateRatio, getTotalTime, formatMs, estimateCompletionPct,
 } from '@/lib/planTree';
+import SliceSummaryPanel from '@/components/SliceSummaryPanel';
 
 // GPCC-style node-and-arrow plan diagram: leaves at the bottom, root at the
 // top, arrows pointing up (the direction data actually flows) — a
@@ -69,6 +70,16 @@ interface PlanGraphProps {
   finished?: boolean;
   /** Viewport height available for the graph; defaults to a fixed size for the Watch panel's fixed-width sidebar. Ignored in fullscreen mode. */
   maxHeight?: number;
+  /**
+   * The Watch panel's slice/timing summary, rendered inside this
+   * component (not as a sibling in the caller) so it stays visible in
+   * fullscreen too — fullscreen renders via a portal straight into
+   * document.body, which anything sitting outside PlanGraph in the DOM
+   * tree simply isn't part of.
+   */
+  sliceSummaries?: SliceSummary[];
+  runTimeMs?: number;
+  estProgressPct?: number | null;
 }
 
 const ZOOM_MIN = 0.4;
@@ -78,7 +89,10 @@ const ZOOM_MAX = 2;
 // a node would fall through as a 1px drag instead.
 const PAN_CLICK_THRESHOLD = 4;
 
-export default function PlanGraph({ root, rootTime, nodeIds, liveNodes, finished, maxHeight = 460 }: PlanGraphProps) {
+export default function PlanGraph({
+  root, rootTime, nodeIds, liveNodes, finished, maxHeight = 460,
+  sliceSummaries, runTimeMs, estProgressPct,
+}: PlanGraphProps) {
   const [selected, setSelected] = useState<PlanNode | null>(null);
   const [zoom, setZoom] = useState(1);
   // Pan offset in pixels, applied via `translate()` on the content layer —
@@ -368,6 +382,10 @@ export default function PlanGraph({ root, rootTime, nodeIds, liveNodes, finished
     </div>
   );
 
+  const sidePanel = sliceSummaries && sliceSummaries.length > 0 && (
+    <SliceSummaryPanel slices={sliceSummaries} runTimeMs={runTimeMs ?? 0} estProgressPct={estProgressPct ?? null} />
+  );
+
   if (isFullscreen) {
     // Rendered via a portal straight into document.body — not just nested
     // deeper in the Watch panel's own tree. The Watch panel's slide-in
@@ -382,15 +400,18 @@ export default function PlanGraph({ root, rootTime, nodeIds, liveNodes, finished
     // barely any extra room to see the difference in.
     return createPortal(
       <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-6">
-        <div className="w-full h-full max-w-[1800px] bg-zinc-950 border border-zinc-800 rounded-lg flex flex-col p-4 overflow-hidden">
-          <div className="flex items-center justify-between">
-            {toolbar}
-            <button onClick={() => setIsFullscreen(false)} className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 mb-2" title="Close (Esc)">
-              <X size={16} />
-            </button>
+        <div className="w-full h-full max-w-[1800px] bg-zinc-950 border border-zinc-800 rounded-lg flex p-4 overflow-hidden">
+          {sidePanel}
+          <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between">
+              {toolbar}
+              <button onClick={() => setIsFullscreen(false)} className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 mb-2" title="Close (Esc)">
+                <X size={16} />
+              </button>
+            </div>
+            {canvas}
+            <div className="overflow-y-auto shrink-0 max-h-[35%]">{detail}</div>
           </div>
-          {canvas}
-          <div className="overflow-y-auto shrink-0 max-h-[35%]">{detail}</div>
         </div>
       </div>,
       document.body,
@@ -398,10 +419,13 @@ export default function PlanGraph({ root, rootTime, nodeIds, liveNodes, finished
   }
 
   return (
-    <div className="p-4">
-      {toolbar}
-      {canvas}
-      {detail}
+    <div className="p-4 flex gap-3">
+      {sidePanel}
+      <div className="flex-1 min-w-0">
+        {toolbar}
+        {canvas}
+        {detail}
+      </div>
     </div>
   );
 }

@@ -1,16 +1,36 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, type PointerEvent } from 'react';
 import { X, RefreshCw, AlertTriangle } from 'lucide-react';
 import { api } from '@/lib/api';
 import PlanViewer, { type LiveNodeStats } from '@/components/PlanViewer';
+import {
+  type PlanNode, type SliceTiming, EMPTY_SLICE_TIMING,
+  buildRealPlanTree, computeSliceIds, sliceIdsByNid, advanceSliceTiming, summarizeSlices,
+  estimateCompletionPct,
+} from '@/lib/planTree';
 import type { QueryProgressNode, QueryProgressPlanNode } from '@/types/metrics';
 
 interface QueryWatchPanelProps {
   pid: number;
   sql: string;
+  /** pg_stat_activity.query_start for this pid, if the caller already has it (Activity Monitor's row, SQL Editor's pid-discovery match) — used as "Run Time"'s start; falls back to when this panel was opened if absent. */
+  queryStart?: string | null;
   onClose: () => void;
 }
 
 const POLL_INTERVAL_MS = 800;
+
+// Plain top-level helpers (not written inline in the component body) so the
+// wall-clock reads they do aren't flagged as an impure render — same
+// pattern Activity.tsx's own computeDuration already uses for the same
+// reason (Date.now() is fine off the render's critical path, e.g. inside a
+// ref initializer that only ever runs once, or a value only read when
+// asked for).
+function resolveStartMs(queryStart?: string | null): number {
+  return queryStart ? new Date(queryStart).getTime() : Date.now();
+}
+function nowMs(): number {
+  return Date.now();
+}
 
 function aggregateByNode(nodes: QueryProgressNode[]): Record<number, LiveNodeStats> {
   const byNode: Record<number, { rows: number; segments: Set<number> }> = {};
@@ -68,7 +88,7 @@ function mergeLiveNodes(
 // on servers without the real capture.
 const EXPLAIN_FALLBACK_GRACE_MS = 1500;
 
-export default function QueryWatchPanel({ pid, sql, onClose }: QueryWatchPanelProps) {
+export default function QueryWatchPanel({ pid, sql, queryStart, onClose }: QueryWatchPanelProps) {
   const [plan, setPlan] = useState<unknown>(null);
   const [planError, setPlanError] = useState('');
   const [realPlan, setRealPlan] = useState<QueryProgressPlanNode[] | undefined>(undefined);
@@ -78,6 +98,55 @@ export default function QueryWatchPanel({ pid, sql, onClose }: QueryWatchPanelPr
   const [explainGraceElapsed, setExplainGraceElapsed] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasRealPlan = !!realPlan && realPlan.length > 0;
+
+  // Panel width, draggable from its left edge — the panel itself is
+  // anchored to the right side of the screen (slides in from the right),
+  // so dragging the handle left/right changes width, not position.
+  const [panelWidth, setPanelWidth] = useState(768);
+  const resizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+
+  const onResizePointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    resizeRef.current = { pointerId: e.pointerId, startX: e.clientX, startWidth: panelWidth };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onResizePointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    const drag = resizeRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    const dx = e.clientX - drag.startX;
+    // Dragging the left edge left (negative dx) makes the panel wider,
+    // since the right edge stays pinned to the screen's edge.
+    const next = Math.min(window.innerWidth - 48, Math.max(420, drag.startWidth - dx));
+    setPanelWidth(next);
+  };
+  const onResizePointerUp = (e: PointerEvent<HTMLDivElement>) => {
+    resizeRef.current = null;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+  };
+
+  // "Run Time" clock start — the query's own query_start when the caller
+  // has it, else when this panel first mounted (close enough: Watch is
+  // opened moments after a query starts, in both the SQL Editor and
+  // Activity Monitor's "watch this already-running query" cases). Set
+  // once via the lazy useState initializer, never changes again.
+  const [startMs] = useState<number>(() => resolveStartMs(queryStart));
+
+  // Slice grouping/root metadata, and per-slice "active time" (see
+  // advanceSliceTiming's own comment for what that actually measures) —
+  // all state, all read at render time to build the summary panel, so none
+  // of it may live in a ref (React flags reading ref.current during
+  // render). nidToSliceRef is the one exception: it's pure poll-loop
+  // bookkeeping (matching a fresh poll's per-nid rows back to a slice) that
+  // the render path never touches, so a ref is correct for it.
+  const [sliceIds, setSliceIds] = useState<Map<PlanNode, number> | null>(null);
+  const [rootMeta, setRootMeta] = useState<{ nid?: number; estRows?: number } | null>(null);
+  const [sliceTiming, setSliceTiming] = useState<SliceTiming>(EMPTY_SLICE_TIMING);
+  const [lastPollAt, setLastPollAt] = useState<number>(() => nowMs());
+  const nidToSliceRef = useRef<Map<number, number> | null>(null);
+  // Mirrors lastPollAt for use inside the poll callback itself: the dt
+  // computation needs the *previous* poll's timestamp synchronously, and
+  // reading state back out of the same closure that scheduled its own
+  // update would see a stale value until the next render runs.
+  const lastPollAtInternalRef = useRef<number>(nowMs());
 
   // Fetch the static plan shape once (no ANALYZE — the query is still running)
   useEffect(() => {
@@ -105,7 +174,8 @@ export default function QueryWatchPanel({ pid, sql, onClose }: QueryWatchPanelPr
           if (pollRef.current) clearInterval(pollRef.current);
           return;
         }
-        setLiveNodes(prev => mergeLiveNodes(prev, aggregateByNode(progress.nodes)));
+        const freshByNode = aggregateByNode(progress.nodes);
+        setLiveNodes(prev => mergeLiveNodes(prev, freshByNode));
         if (progress.memory && progress.memory.length > 0) {
           setMemoryMb(progress.memory.reduce((sum, m) => sum + m.vmem_mb, 0));
         }
@@ -115,6 +185,26 @@ export default function QueryWatchPanel({ pid, sql, onClose }: QueryWatchPanelPr
         // reconstruction in that case.
         if (progress.plan && progress.plan.length > 0) {
           setRealPlan(progress.plan);
+
+          // Slice grouping only needs computing once — the captured tree's
+          // structure is fixed for the life of the query.
+          if (!nidToSliceRef.current) {
+            const root = buildRealPlanTree(progress.plan);
+            if (root) {
+              const ids = computeSliceIds(root);
+              nidToSliceRef.current = sliceIdsByNid(root, ids);
+              setSliceIds(ids);
+              setRootMeta({ nid: root.Nid, estRows: root['Plan Rows'] });
+            }
+          }
+        }
+
+        if (nidToSliceRef.current) {
+          const now = nowMs();
+          const dt = now - lastPollAtInternalRef.current;
+          lastPollAtInternalRef.current = now;
+          setLastPollAt(now);
+          setSliceTiming(prev => advanceSliceTiming(prev, freshByNode, nidToSliceRef.current!, dt));
         }
       })
       .catch(() => {
@@ -142,11 +232,35 @@ export default function QueryWatchPanel({ pid, sql, onClose }: QueryWatchPanelPr
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
 
+  // Recomputed on every render (each poll re-renders via setLiveNodes/
+  // setFinished above) rather than cached in state, so — same as every
+  // other live figure in this panel — a query that just finished snaps
+  // this to 100% immediately via `finished`, instead of freezing at
+  // whatever number happened to be in flight the moment it ended.
+  const sliceSummaries = sliceIds ? summarizeSlices(sliceIds, sliceTiming.activeMs) : [];
+  const overallProgressPct = rootMeta?.nid != null
+    ? estimateCompletionPct(liveNodes[rootMeta.nid], rootMeta.estRows, finished)
+    : null;
+  const runTimeMs = (finished ? lastPollAt : nowMs()) - startMs;
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
 
-      <div className="relative w-full max-w-3xl bg-zinc-900 border-l border-zinc-700 shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
+      <div
+        className="relative max-w-[calc(100vw-3rem)] bg-zinc-900 border-l border-zinc-700 shadow-2xl flex flex-col animate-in slide-in-from-right duration-200"
+        style={{ width: panelWidth }}
+      >
+        {/* Drag handle — the panel is anchored to the right edge, so
+            dragging this left/right changes its width, not its position. */}
+        <div
+          onPointerDown={onResizePointerDown}
+          onPointerMove={onResizePointerMove}
+          onPointerUp={onResizePointerUp}
+          onPointerCancel={onResizePointerUp}
+          className="absolute left-0 top-0 bottom-0 w-1.5 -translate-x-1/2 cursor-col-resize hover:bg-blue-500/50 z-10"
+        />
+
         <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
           <div>
             <h2 className="text-sm font-semibold text-zinc-200">Watching query — pid {pid}</h2>
@@ -179,7 +293,10 @@ export default function QueryWatchPanel({ pid, sql, onClose }: QueryWatchPanelPr
           {planError && !hasRealPlan && explainGraceElapsed ? (
             <p className="text-sm text-red-400 p-4">{planError}</p>
           ) : hasRealPlan || (explainGraceElapsed && plan) ? (
-            <PlanViewer plan={plan} liveNodes={liveNodes} realPlan={realPlan} finished={finished} />
+            <PlanViewer
+              plan={plan} liveNodes={liveNodes} realPlan={realPlan} finished={finished}
+              sliceSummaries={sliceSummaries} runTimeMs={runTimeMs} estProgressPct={overallProgressPct}
+            />
           ) : (
             <p className="text-sm text-zinc-500 p-4">Loading plan...</p>
           )}

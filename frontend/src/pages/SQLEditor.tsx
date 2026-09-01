@@ -26,6 +26,7 @@ interface QueryTab {
   duration: number | null;
   page: number;
   watchPid: number | null;
+  watchQueryStart: string | null;
   showWatchPanel: boolean;
 }
 
@@ -58,7 +59,7 @@ function newTab(id: number): QueryTab {
   return {
     id, name: `Query ${id}`, sql: '',
     running: false, result: null, explainResult: null, error: '', duration: null,
-    page: 0, watchPid: null, showWatchPanel: false,
+    page: 0, watchPid: null, watchQueryStart: null, showWatchPanel: false,
   };
 }
 
@@ -129,7 +130,7 @@ export default function SQLEditor() {
   // nothing to watch by the time we'd find it anyway.
   function startPidDiscovery(tabId: number, sql: string) {
     if (pidPollRefs.current[tabId]) clearInterval(pidPollRefs.current[tabId]);
-    updateTab(tabId, { watchPid: null });
+    updateTab(tabId, { watchPid: null, watchQueryStart: null });
     const normalizedSql = normalizeSqlForMatch(sql);
     let attempts = 0;
     const poll = () => {
@@ -140,7 +141,7 @@ export default function SQLEditor() {
             .filter(c => c.state === 'active' && normalizeSqlForMatch(c.query) === normalizedSql)
             .sort((a, b) => (b.query_start ?? '').localeCompare(a.query_start ?? ''))[0];
           if (match) {
-            updateTab(tabId, { watchPid: match.pid });
+            updateTab(tabId, { watchPid: match.pid, watchQueryStart: match.query_start });
             clearInterval(pidPollRefs.current[tabId]);
             delete pidPollRefs.current[tabId];
           } else if (attempts >= 15) {
@@ -443,6 +444,7 @@ export default function SQLEditor() {
         <QueryWatchPanel
           pid={activeTab.watchPid}
           sql={activeTab.sql.trim()}
+          queryStart={activeTab.watchQueryStart}
           onClose={() => updateTab(activeTabId, { showWatchPanel: false })}
         />
       )}
