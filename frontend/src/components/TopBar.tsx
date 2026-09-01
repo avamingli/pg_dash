@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Database, Bell } from 'lucide-react';
+import { Database, Bell, Eye, EyeOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
 import { useMetrics } from '@/contexts/MetricsContext';
 import type { ServerInfo } from '@/types/metrics';
 
 export default function TopBar() {
-  const { connected, latest } = useMetrics();
+  const { connected, latest, showVersionDetails, toggleVersionDetails } = useMetrics();
   const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
   const [alertCount, setAlertCount] = useState(0);
 
@@ -55,13 +55,24 @@ export default function TopBar() {
           </span>
         </div>
 
-        {shortVersion && (
+        {(shortVersion || isDistributed) && (
+          <button
+            type="button"
+            onClick={toggleVersionDetails}
+            title={showVersionDetails ? 'Hide version details' : 'Show version details'}
+            className="text-zinc-500 hover:text-zinc-300 hidden sm:inline-flex"
+          >
+            {showVersionDetails ? <EyeOff size={14} /> : <Eye size={14} />}
+          </button>
+        )}
+
+        {showVersionDetails && shortVersion && (
           <span className="text-sm text-zinc-500 hidden sm:inline">
             {shortVersion}
           </span>
         )}
 
-        {isDistributed && (
+        {showVersionDetails && isDistributed && (
           <span className="text-xs font-medium px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 hidden sm:inline">
             {ci.product_name} {ci.version} &middot; {ci.num_segments} segments
           </span>

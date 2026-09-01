@@ -15,6 +15,12 @@ interface MetricsContextValue {
   // Live query plan tree requires both this AND queryMetricsAvailable —
   // see ServerInfo.real_plan_shmem_available.
   realPlanShmemAvailable: boolean;
+  // Whether the exact build/version string (server version, product
+  // version, segment count) is shown in the UI. Off by default so a
+  // screen share doesn't leak build details; toggled by clicking the
+  // logo in Sidebar.
+  showVersionDetails: boolean;
+  toggleVersionDetails: () => void;
 }
 
 const MetricsContext = createContext<MetricsContextValue>({
@@ -25,6 +31,8 @@ const MetricsContext = createContext<MetricsContextValue>({
   clusterInfo: null,
   queryMetricsAvailable: false,
   realPlanShmemAvailable: false,
+  showVersionDetails: false,
+  toggleVersionDetails: () => {},
 });
 
 export function useMetrics() {
@@ -42,6 +50,8 @@ export function MetricsProvider({ children }: MetricsProviderProps) {
   const [queryMetricsAvailable, setQueryMetricsAvailable] = useState(false);
   const [realPlanShmemAvailable, setRealPlanShmemAvailable] = useState(false);
   const [history, setHistory] = useState<MetricsSnapshot[]>([]);
+  const [showVersionDetails, setShowVersionDetails] = useState(false);
+  const toggleVersionDetails = useCallback(() => setShowVersionDetails(v => !v), []);
 
   // Build WS URL — use VITE_WS_URL (direct to backend) when set,
   // otherwise derive from current page origin (for production behind a reverse proxy).
@@ -97,7 +107,7 @@ export function MetricsProvider({ children }: MetricsProviderProps) {
   }, [clusterInfo]);
 
   return (
-    <MetricsContext.Provider value={{ latest, history, connected, send, clusterInfo, queryMetricsAvailable, realPlanShmemAvailable }}>
+    <MetricsContext.Provider value={{ latest, history, connected, send, clusterInfo, queryMetricsAvailable, realPlanShmemAvailable, showVersionDetails, toggleVersionDetails }}>
       {children}
     </MetricsContext.Provider>
   );
