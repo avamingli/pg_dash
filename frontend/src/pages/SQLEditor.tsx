@@ -39,6 +39,21 @@ interface HistoryEntry {
 
 const PAGE_SIZE = 50;
 
+// startPidDiscovery below matches a running pg_stat_activity row back to
+// the tab that started it by comparing query text -- there's no other
+// signal available (the pid isn't known until the query's already been
+// dispatched, and it's the row's *content*, not identity, that ties it to
+// a tab). Comparing raw strings is fragile for a multi-line query: the
+// textarea's line endings, or trailing whitespace on a wrapped line, don't
+// have to match pg_stat_activity's stored copy byte-for-byte to be the
+// same query. Collapsing all whitespace runs (newlines included) to a
+// single space before comparing makes the match robust to exactly that
+// kind of difference without weakening it in any way that would risk a
+// false match between two actually-different queries.
+function normalizeSqlForMatch(sql: string): string {
+  return sql.replace(/\s+/g, ' ').trim();
+}
+
 function newTab(id: number): QueryTab {
   return {
     id, name: `Query ${id}`, sql: '',
@@ -115,13 +130,14 @@ export default function SQLEditor() {
   function startPidDiscovery(tabId: number, sql: string) {
     if (pidPollRefs.current[tabId]) clearInterval(pidPollRefs.current[tabId]);
     updateTab(tabId, { watchPid: null });
+    const normalizedSql = normalizeSqlForMatch(sql);
     let attempts = 0;
     const poll = () => {
       attempts += 1;
       api.getActivity()
         .then(conns => {
           const match = conns
-            .filter(c => c.state === 'active' && c.query.trim() === sql)
+            .filter(c => c.state === 'active' && normalizeSqlForMatch(c.query) === normalizedSql)
             .sort((a, b) => (b.query_start ?? '').localeCompare(a.query_start ?? ''))[0];
           if (match) {
             updateTab(tabId, { watchPid: match.pid });
