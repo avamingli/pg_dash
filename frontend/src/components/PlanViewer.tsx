@@ -5,14 +5,15 @@ import {
   type PlanNode, type LiveNodeStats, type SliceSummary,
   assignNodeIds, buildRealPlanTree, parsePlan, parseOptimizer,
   getTotalTime, getRootTotalTime, rowEstimateRatio, nodeColor, formatMs,
-  nodeLabel, sliceLabel, estimateCompletionPct,
+  nodeLabel, estimateCompletionPct, sliceColor,
 } from '@/lib/planTree';
 import PlanGraph from '@/components/PlanGraph';
 
 export type { PlanNode, LiveNodeStats };
 
 interface PlanViewerProps {
-  plan: unknown;
+  /** Optional static plan JSON (e.g. from EXPLAIN in the SQL Editor). The live Watch panel omits it — realPlan is authoritative there. */
+  plan?: unknown;
   /**
    * Live per-node progress, keyed by plan_node_id. plan_node_id isn't part
    * of EXPLAIN's JSON output, so it's not something this component can read
@@ -80,6 +81,8 @@ function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes, finished }: {
   const relation = node['Relation Name']
     ? `${node['Schema'] ? node['Schema'] + '.' : ''}${node['Relation Name']}${node['Alias'] && node['Alias'] !== node['Relation Name'] ? ` (${node['Alias']})` : ''}`
     : '';
+  const sliceId = node['Slice'];
+  const sliceHex = sliceColor(sliceId);
 
   return (
     <div className="relative" style={{ marginLeft: depth > 0 ? 20 : 0 }}>
@@ -91,7 +94,10 @@ function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes, finished }: {
         <div className="absolute left-[-12px] top-[16px] w-[12px] h-px bg-zinc-700" />
       )}
 
-      <div className={`rounded border ${color} mb-1`}>
+      <div
+        className={`rounded border ${color} mb-1 relative overflow-hidden`}
+        style={sliceHex ? { boxShadow: `inset 3px 0 0 ${sliceHex}` } : undefined}
+      >
         {/* Header */}
         <div
           className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none"
@@ -103,11 +109,17 @@ function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes, finished }: {
             <span className="w-[14px] shrink-0" />
           )}
 
+          {sliceId != null && sliceHex && (
+            <span
+              className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded shrink-0"
+              style={{ color: sliceHex, backgroundColor: `${sliceHex}22`, border: `1px solid ${sliceHex}55` }}
+              title={`slice ${sliceId}`}
+            >
+              s{sliceId}
+            </span>
+          )}
           <span className="font-mono text-xs text-blue-400 font-semibold">{nodeLabel(node)}</span>
           {relation && <span className="text-xs text-zinc-400">on {relation}</span>}
-          {sliceLabel(node) && (
-            <span className="text-[10px] text-zinc-600 font-mono">({sliceLabel(node)})</span>
-          )}
 
           <div className="ml-auto flex items-center gap-3 text-xs">
             {/* Time */}

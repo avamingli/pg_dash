@@ -113,7 +113,7 @@ export function assignNodeIds(root: PlanNode, isORCA: boolean): Map<PlanNode, nu
  * QD-only nodes above the top Motion, so they're preferred wherever a nid
  * appears on both.
  */
-export function buildRealPlanTree(rows: QueryProgressPlanNode[]): PlanNode | null {
+export function buildRealPlanTree(rows: QueryProgressPlanNode[], segments?: number): PlanNode | null {
   if (!rows || rows.length === 0) return null;
 
   const byNid = new Map<number, QueryProgressPlanNode>();
@@ -123,6 +123,22 @@ export function buildRealPlanTree(rows: QueryProgressPlanNode[]): PlanNode | nul
 
   const nodes = new Map<number, PlanNode>();
   for (const [nid, row] of byNid) {
+    // motion_senders/motion_receivers come from whpg_plan_tree, but the
+    // shipping version leaves them null on every Motion. Synthesize them
+    // from GPDB's own fan-in/fan-out convention when we have a segment
+    // count to fill in: Gather = N→1, Broadcast/Redistribute/Explicit = N→N.
+    // Non-motion nodes never get counts.
+    let senders = row.motion_senders ?? undefined;
+    let receivers = row.motion_receivers ?? undefined;
+    if (senders == null && receivers == null && segments != null && segments > 0) {
+      switch (row.node_type) {
+        case 'Gather Motion':          senders = segments; receivers = 1; break;
+        case 'Broadcast Motion':
+        case 'Redistribute Motion':
+        case 'Explicit Motion':        senders = segments; receivers = segments; break;
+      }
+    }
+
     nodes.set(nid, {
       'Node Type': row.node_type,
       'Relation Name': row.relname ?? undefined,
@@ -134,8 +150,8 @@ export function buildRealPlanTree(rows: QueryProgressPlanNode[]): PlanNode | nul
       'Partial Mode': row.partial_mode ?? undefined,
       'Operation': row.operation ?? undefined,
       'Parallel Aware': row.parallel_aware,
-      'Senders': row.motion_senders ?? undefined,
-      'Receivers': row.motion_receivers ?? undefined,
+      'Senders': senders,
+      'Receivers': receivers,
       Nid: nid,
       Plans: [],
     });
@@ -149,6 +165,15 @@ export function buildRealPlanTree(rows: QueryProgressPlanNode[]): PlanNode | nul
     } else {
       nodes.get(row.parent_nid)!.Plans!.push(node);
     }
+  }
+
+  // Bake slice ids straight onto the tree so downstream (nodeLabel/sliceLabel,
+  // PlanViewer's slice pill, PlanGraph's per-node stripe, SliceSummaryPanel's
+  // legend) can all read one canonical field instead of re-threading a
+  // separate Map<PlanNode,number> everywhere.
+  if (root) {
+    const sliceMap = computeSliceIds(root);
+    for (const [node, sid] of sliceMap) node['Slice'] = sid;
   }
   return root;
 }
@@ -294,11 +319,25 @@ export const EMPTY_SLICE_TIMING: SliceTiming = { activeMs: {}, rawRows: {} };
  * "how long has this slice been running" is approximated the same way the
  * rest of this Watch feature approximates progress: by observing it from
  * outside, one poll at a time. A slice counts as active for a given
- * interval if at least one of its nodes' row counts grew since the last
- * poll; the interval's wall-clock length gets added to that slice's total.
- * A slice that finished producing rows early (its nodes' counts stop
- * changing) naturally stops accumulating, even while sibling slices or the
- * query as a whole keep running.
+ * interval if at least one of its nodes has any live rows in shmem
+ * (rows > 0); the interval's wall-clock length gets added to that
+ * slice's total.
+ *
+ * We deliberately don't require rows to have *grown* since the previous
+ * poll: Motion and Hash nodes stop counting the moment their phase
+ * completes (a Hash reports its build-side row count and stays there; a
+ * Redistribute Motion reports total rows sent and stays there), yet the
+ * slice they belong to is still alive as long as another slice downstream
+ * is pulling from it. A "grew this interval" check would drop that slice's
+ * credit the moment its phase finished, even though the slice as a whole
+ * hasn't. rawRows is kept as bookkeeping for callers that still want
+ * per-nid delta information but isn't consulted by the active-slice
+ * decision.
+ *
+ * Purely-hoarder slices — a slice whose only nodes are Sort / top-of-plan
+ * Aggregate / top-of-plan Limit — still legitimately show 0 through the
+ * accumulation phase and only pop above zero for the final emit; that's
+ * an accurate reflection of "no observable tuple flow", not a scoring bug.
  */
 export function advanceSliceTiming(
   prev: SliceTiming,
@@ -308,11 +347,9 @@ export function advanceSliceTiming(
 ): SliceTiming {
   const activeSlices = new Set<number>();
   for (const [nidStr, stats] of Object.entries(freshByNode)) {
-    const nid = Number(nidStr);
-    if (stats.rows > (prev.rawRows[nid] ?? 0)) {
-      const sliceId = nidToSlice.get(nid);
-      if (sliceId != null) activeSlices.add(sliceId);
-    }
+    if (stats.rows <= 0) continue;
+    const sliceId = nidToSlice.get(Number(nidStr));
+    if (sliceId != null) activeSlices.add(sliceId);
   }
   const activeMs = { ...prev.activeMs };
   for (const sid of activeSlices) activeMs[sid] = (activeMs[sid] ?? 0) + dtMs;
@@ -410,4 +447,25 @@ export function sliceLabel(node: PlanNode): string | null {
   if (node['Slice'] == null || node['Slice'] === 0) return null;
   const segments = node['Segments'] != null ? `; segments: ${node['Segments']}` : '';
   return `slice${node['Slice']}${segments}`;
+}
+
+// Canonical per-slice color, keyed on slice id (not on ordinal position in a
+// list) so the same slice reads the same color everywhere it appears — in
+// the tree, in the graph card's left stripe, and in SliceSummaryPanel's
+// legend. Repeats every 8 slices, which is fine visually because at that
+// depth the tree structure already tells them apart.
+export const SLICE_COLORS = [
+  '#3b82f6', // blue-500
+  '#f59e0b', // amber-500
+  '#10b981', // emerald-500
+  '#a855f7', // purple-500
+  '#ec4899', // pink-500
+  '#06b6d4', // cyan-500
+  '#f97316', // orange-500
+  '#84cc16', // lime-500
+];
+
+export function sliceColor(sliceId: number | null | undefined): string | null {
+  if (sliceId == null || sliceId < 1) return null;
+  return SLICE_COLORS[(sliceId - 1) % SLICE_COLORS.length];
 }

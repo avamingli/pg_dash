@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import {
   type PlanNode, type LiveNodeStats, type SliceSummary,
-  nodeLabel, sliceLabel, rowEstimateRatio, getTotalTime, formatMs, estimateCompletionPct,
+  nodeLabel, rowEstimateRatio, getTotalTime, formatMs, estimateCompletionPct, sliceColor,
 } from '@/lib/planTree';
 import SliceSummaryPanel from '@/components/SliceSummaryPanel';
 
@@ -396,7 +396,8 @@ export default function PlanGraph({
           const ratio = rowEstimateRatio(node);
           const isSelected = selected === node;
           const relation = node['Relation Name'];
-          const slice = sliceLabel(node);
+          const sliceId = node['Slice'];
+          const sliceHex = sliceColor(sliceId);
 
           const borderColor = isSelected
             ? 'border-blue-500'
@@ -424,6 +425,16 @@ export default function PlanGraph({
           // would just compete with it instead of adding information.
           const isRunning = live != null && !finished && ratio <= 10;
 
+          // Two boxShadow signals stack on the card: the slice-color left
+          // stripe (always shown when the node has a slice id) and the
+          // running-node emerald glow. Both go through the same boxShadow
+          // property so their order matters — inset ones first so they
+          // don't get clipped by the outer glow.
+          const shadowParts: string[] = [];
+          if (sliceHex) shadowParts.push(`inset 3px 0 0 ${sliceHex}`);
+          if (isRunning) shadowParts.push('0 0 0 1px rgba(16,185,129,0.25), 0 0 16px 2px rgba(16,185,129,0.35)');
+          const boxShadow = shadowParts.length ? shadowParts.join(', ') : undefined;
+
           return (
             <button
               key={nid ?? i}
@@ -431,7 +442,7 @@ export default function PlanGraph({
               className={`absolute rounded-lg border ${borderColor} bg-zinc-900 text-left transition-colors duration-500 overflow-hidden ${isSelected ? 'shadow-sm' : ''} hover:border-blue-400`}
               style={{
                 left: px(ln.x) - NODE_W / 2, top: py(ln.depth), width: NODE_W, height: NODE_H,
-                boxShadow: isRunning ? '0 0 0 1px rgba(16,185,129,0.25), 0 0 16px 2px rgba(16,185,129,0.35)' : undefined,
+                boxShadow,
               }}
             >
               {isRunning && <div className="absolute inset-0 rounded-lg pg-glow" style={{ boxShadow: '0 0 20px 4px rgba(16,185,129,0.45)' }} />}
@@ -454,9 +465,18 @@ export default function PlanGraph({
                   <Icon size={11} />
                 </span>
                 <span className="text-[11px] font-semibold text-zinc-100 truncate">{label}</span>
+                {sliceId != null && sliceHex && (
+                  <span
+                    className="ml-auto text-[9px] font-mono font-semibold px-1 rounded shrink-0"
+                    style={{ color: sliceHex, backgroundColor: `${sliceHex}22`, border: `1px solid ${sliceHex}55` }}
+                    title={`slice ${sliceId}`}
+                  >
+                    s{sliceId}
+                  </span>
+                )}
               </div>
               <div className="relative px-2 text-[10px] text-zinc-500 truncate">
-                {relation ? `on ${relation}` : slice ?? ' '}
+                {relation ? `on ${relation}` : ' '}
               </div>
               <div className={`relative px-2 text-[10px] font-mono flex items-center gap-1 transition-colors duration-500 ${finished ? 'text-blue-300' : 'text-emerald-300'}`}>
                 {live != null && (

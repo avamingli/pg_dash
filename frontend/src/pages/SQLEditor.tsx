@@ -51,6 +51,14 @@ const PAGE_SIZE = 50;
 // single space before comparing makes the match robust to exactly that
 // kind of difference without weakening it in any way that would risk a
 // false match between two actually-different queries.
+//
+// The match itself is *containment*, not equality: the backend runs
+// multi-statement SQL via simple query protocol and, in read-only mode,
+// wraps it as "BEGIN READ ONLY; <user sql>; ROLLBACK;" — so
+// pg_stat_activity.query is what we sent to Postgres, which contains but
+// isn't equal to the user's original text. Substring both covers the wrap
+// and still hits the single-statement extended-protocol case (a string
+// contains itself).
 function normalizeSqlForMatch(sql: string): string {
   return sql.replace(/\s+/g, ' ').trim();
 }
@@ -140,7 +148,7 @@ export default function SQLEditor() {
       api.getActivity()
         .then(conns => {
           const match = conns
-            .filter(c => c.state === 'active' && normalizeSqlForMatch(c.query) === normalizedSql)
+            .filter(c => c.state === 'active' && c.query && normalizeSqlForMatch(c.query).includes(normalizedSql))
             .sort((a, b) => (b.query_start ?? '').localeCompare(a.query_start ?? ''))[0];
           if (match) {
             updateTab(tabId, { watchPid: match.pid, watchQueryStart: match.query_start });

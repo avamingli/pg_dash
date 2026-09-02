@@ -61,16 +61,20 @@ ORDER BY segid, nid`
 const SessIDForPid = `SELECT sess_id FROM pg_stat_activity WHERE pid = $1`
 
 // SessIDForPidRunning is SessIDForPid plus a check that the backend is
-// still running the exact query the caller started watching. Without
-// this, once the watched query finishes, its pooled connection goes back
-// to pg_dash's own connection pool and can be picked up by a completely
+// still running the query the caller started watching. Without this,
+// once the watched query finishes, its pooled connection goes back to
+// pg_dash's own connection pool and can be picked up by a completely
 // unrelated query within one poll interval (including pg_dash's own
 // periodic collector queries) — a bare pid match would then happily
 // return that unrelated query's live nodes/plan as if they belonged to
-// the original one. $1 = pid, $2 = the exact SQL text being watched.
+// the original one. Substring, not equality, because pg_stat_activity
+// often shows a wrapped form of what the caller submitted: the SQL
+// Editor's read-only path prepends "BEGIN READ ONLY; " and appends
+// "; ROLLBACK;", and simple-query multi-statement batches show the
+// whole batch as one string. $1 = pid, $2 = the SQL text being watched.
 const SessIDForPidRunning = `
 SELECT sess_id FROM pg_stat_activity
-WHERE pid = $1 AND state = 'active' AND query = $2`
+WHERE pid = $1 AND state = 'active' AND position($2 in query) > 0`
 
 // SessionMemoryForSession returns live per-segment memory usage (MB) for one
 // session, from gp_internal_tools' session_state.session_level_memory_consumption

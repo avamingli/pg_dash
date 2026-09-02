@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef, type PointerEvent } from 'rea
 import { X, RefreshCw, AlertTriangle } from 'lucide-react';
 import { api } from '@/lib/api';
 import PlanViewer, { type LiveNodeStats } from '@/components/PlanViewer';
+import { useMetrics } from '@/contexts/MetricsContext';
 import {
   type PlanNode, type SliceTiming, EMPTY_SLICE_TIMING,
   buildRealPlanTree, computeSliceIds, sliceIdsByNid, advanceSliceTiming, summarizeSlices,
@@ -75,27 +76,17 @@ function mergeLiveNodes(
   return merged;
 }
 
-// The EXPLAIN-based fallback and WHPG's real plan-shmem capture are two
-// independent round trips (see the two effects below); on a server that
-// has the real capture, it's normal for /progress to resolve slightly
-// slower than the single, lighter EXPLAIN call — rendering EXPLAIN's
-// answer the moment it lands, then swapping to the real tree a poll later,
-// reads as the whole structure "jumping" to something different (it may
-// genuinely be a different plan — a fresh EXPLAIN is a reconstruction, not
-// a guarantee, that's the entire point of the real capture). Giving the
-// first poll this much of a head start avoids ever showing the wrong one
-// in the common case, at the cost of a slightly longer "Loading plan..."
-// on servers without the real capture.
-const EXPLAIN_FALLBACK_GRACE_MS = 1500;
-
 export default function QueryWatchPanel({ pid, sql, queryStart, onClose }: QueryWatchPanelProps) {
-  const [plan, setPlan] = useState<unknown>(null);
-  const [planError, setPlanError] = useState('');
+  // Segments count feeds buildRealPlanTree so we can synthesize Motion N:M
+  // labels (Gather=N→1, Broadcast/Redistribute/Explicit=N→N) — whpg_plan_tree
+  // ships those columns as null, so without this the plugin gives no fan-in/
+  // fan-out hint at all.
+  const { clusterInfo } = useMetrics();
+  const segmentsCount = clusterInfo?.num_segments;
   const [realPlan, setRealPlan] = useState<QueryProgressPlanNode[] | undefined>(undefined);
   const [liveNodes, setLiveNodes] = useState<Record<number, LiveNodeStats>>({});
   const [memoryMb, setMemoryMb] = useState<number | null>(null);
   const [finished, setFinished] = useState(false);
-  const [explainGraceElapsed, setExplainGraceElapsed] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasRealPlan = !!realPlan && realPlan.length > 0;
 
@@ -148,18 +139,6 @@ export default function QueryWatchPanel({ pid, sql, queryStart, onClose }: Query
   // update would see a stale value until the next render runs.
   const lastPollAtInternalRef = useRef<number>(nowMs());
 
-  // Fetch the static plan shape once (no ANALYZE — the query is still running)
-  useEffect(() => {
-    api.explainQuery(sql, false, false)
-      .then(res => setPlan(res.plan))
-      .catch(e => setPlanError(e instanceof Error ? e.message : 'Failed to fetch plan'));
-  }, [sql]);
-
-  useEffect(() => {
-    const t = setTimeout(() => setExplainGraceElapsed(true), EXPLAIN_FALLBACK_GRACE_MS);
-    return () => clearTimeout(t);
-  }, []);
-
   const poll = useCallback(() => {
     api.getQueryProgress(pid, sql)
       .then(progress => {
@@ -189,7 +168,7 @@ export default function QueryWatchPanel({ pid, sql, queryStart, onClose }: Query
           // Slice grouping only needs computing once — the captured tree's
           // structure is fixed for the life of the query.
           if (!nidToSliceRef.current) {
-            const root = buildRealPlanTree(progress.plan);
+            const root = buildRealPlanTree(progress.plan, segmentsCount);
             if (root) {
               const ids = computeSliceIds(root);
               nidToSliceRef.current = sliceIdsByNid(root, ids);
@@ -214,7 +193,7 @@ export default function QueryWatchPanel({ pid, sql, queryStart, onClose }: Query
         setFinished(true);
         if (pollRef.current) clearInterval(pollRef.current);
       });
-  }, [pid, sql]);
+  }, [pid, sql, segmentsCount]);
 
   useEffect(() => {
     poll();
@@ -290,13 +269,13 @@ export default function QueryWatchPanel({ pid, sql, queryStart, onClose }: Query
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {planError && !hasRealPlan && explainGraceElapsed ? (
-            <p className="text-sm text-red-400 p-4">{planError}</p>
-          ) : hasRealPlan || (explainGraceElapsed && plan) ? (
+          {hasRealPlan ? (
             <PlanViewer
-              plan={plan} liveNodes={liveNodes} realPlan={realPlan} finished={finished}
+              liveNodes={liveNodes} realPlan={realPlan} finished={finished}
               sliceSummaries={sliceSummaries} runTimeMs={runTimeMs} estProgressPct={overallProgressPct}
             />
+          ) : finished ? (
+            <p className="text-sm text-zinc-500 p-4">Query ended before its plan tree was captured — nothing to show.</p>
           ) : (
             <p className="text-sm text-zinc-500 p-4">Loading plan...</p>
           )}
