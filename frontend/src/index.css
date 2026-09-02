@@ -56,3 +56,33 @@ body {
 .pg-glow {
   animation: pg-glow-pulse 1.8s ease-in-out infinite;
 }
+
+/* PlanGraph: liquid-surface wave, GPCC-style. Two SVG wave crests sit
+   at the top of the emerald fill and slide horizontally on different
+   speeds → parallax that reads unmistakably as "water surface in
+   motion". Amplitude is large (crest ~10px peak-to-trough) and the
+   crest color contrasts against the fill body, so it's actually
+   visible on the ~192px-wide card rather than the polite ripple the
+   previous smaller wave was.
+
+   The wave SVG is 2x the parent's width and contains two identical
+   periods, so translateX(-50%) shifts by exactly one period → seamless
+   loop with no visible jump.
+
+   As fillPct rises, both wave layers are positioned at bottom:fillPct%,
+   so the whole undulating surface climbs with progress — that's the
+   "progress + working" signal in one visual. */
+@keyframes pg-wave-slide {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+.pg-wave-back  { animation: pg-wave-slide 4.5s linear infinite; }
+.pg-wave-front { animation: pg-wave-slide 2.6s linear infinite; }
+
+@keyframes pg-surface-pulse {
+  0%, 100% { opacity: 0.8;  box-shadow: 0 0 6px 0  rgba(52, 211, 153, 0.6); }
+  50%      { opacity: 1;    box-shadow: 0 0 10px 2px rgba(52, 211, 153, 0.9); }
+}
+.pg-surface {
+  animation: pg-surface-pulse 1.5s ease-in-out infinite;
+}

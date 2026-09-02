@@ -497,6 +497,54 @@ export default function PlanGraph({
                     className="absolute bottom-0 left-1.5 right-0 bg-emerald-500/25 transition-all duration-500"
                     style={{ height: `${greenFillPct}%`, opacity: showShimmer ? 0 : 1 }}
                   />
+                  {/* GPCC-style liquid surface: two SVG waves crest at
+                      the top of the fill and drift horizontally at
+                      different speeds (parallax), climbing with fillPct
+                      so "progress rises" and "still working" show as one
+                      integrated motion. Amplitude is deliberately loud
+                      (crest to trough ≈ 10px) to actually register on a
+                      ~192px card — the previous polite ripple wasn't. */}
+                  {state === 'active' && !showShimmer && (
+                    <>
+                      <svg
+                        aria-hidden="true"
+                        className="absolute left-1.5 pg-wave-back pointer-events-none"
+                        preserveAspectRatio="none"
+                        viewBox="0 0 200 20"
+                        style={{
+                          bottom: `calc(${greenFillPct}% - 8px)`,
+                          width: 'calc((100% - 6px) * 2)',
+                          height: 16,
+                        }}
+                      >
+                        <path
+                          d="M0,10 Q25,-2 50,10 T100,10 T150,10 T200,10 V20 H0 Z"
+                          fill="rgba(16,185,129,0.35)"
+                        />
+                      </svg>
+                      <svg
+                        aria-hidden="true"
+                        className="absolute left-1.5 pg-wave-front pointer-events-none"
+                        preserveAspectRatio="none"
+                        viewBox="0 0 200 20"
+                        style={{
+                          bottom: `calc(${greenFillPct}% - 6px)`,
+                          width: 'calc((100% - 6px) * 2)',
+                          height: 14,
+                        }}
+                      >
+                        <path
+                          d="M0,10 Q25,22 50,10 T100,10 T150,10 T200,10 V20 H0 Z"
+                          fill="rgba(52,211,153,0.65)"
+                        />
+                      </svg>
+                      <div
+                        aria-hidden="true"
+                        className="absolute left-1.5 right-0 h-px bg-emerald-300 pg-surface pointer-events-none"
+                        style={{ bottom: `${greenFillPct}%` }}
+                      />
+                    </>
+                  )}
                 </>
               )}
 
