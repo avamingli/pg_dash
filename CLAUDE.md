@@ -57,6 +57,8 @@ Backend layers, each with one job (`backend/internal/`):
 - `service/` — `ConnectionManager` (pool lifecycle, cluster-mode detection, per-database pool cache, reconnect w/ exponential backoff), `SnapshotStore`, `HistoryService` (query history tracking).
 - `ws/` — `Hub`/`Client`, broadcasts every aggregator tick to all connected browsers.
 - `alert/` — rule engine; evaluated against each snapshot inside the aggregator loop.
+- `recommend/` — one-shot health scanner (bloat, missing indexes, vacuum debt, config drift) that returns actionable SQL fixes; queried on demand by the Recommendations page, not on the aggregator tick.
+- `middleware/` — optional JWT auth (`middleware/auth.go`) plus request logging; auth middleware only mounts when `Config.AuthEnabled()` is true.
 - `handler/` — one file per REST resource; each exposes a `Register*Routes(r chi.Router, …)` called from `cmd/server/main.go`. Routes for MPP-only features (`RegisterClusterRoutes`) are only mounted when `clusterInfo.IsDistributed()`.
 
 Cluster-mode detection (`service/connection.go`): `TestConnection` runs `SELECT version()`, matches for `Apache Cloudberry` / `Greenplum Database` in the string, then queries `gp_segment_configuration` for segment/mirror counts and `gp_resource_manager`. Plain PostgreSQL short-circuits to `ModePostgreSQL`. `ClusterInfo.IsDistributed()` is the single gate used everywhere (main.go wiring, handler registration, frontend nav) to decide whether MPP UI/endpoints appear.
