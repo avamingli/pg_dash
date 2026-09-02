@@ -236,7 +236,13 @@ export function estimateCompletionPct(
   estRows: number | undefined,
   finished: boolean,
 ): number | null {
-  if (live == null || !estRows || live.segments <= 0) return null;
+  // rows === 0 with any number of segments reporting is our "recycled
+  // placeholder" pattern (see aggregateByNode) — a leaf that finished so
+  // quickly its worker slots recycled and only the coord dispatcher's
+  // empty row remains. Reporting 0% for that reads as "stuck at 0%" even
+  // when the node clearly completed (its parent Motion already has rows).
+  // Null here means "no measurement" and lets the UI render "—" instead.
+  if (live == null || !estRows || live.segments <= 0 || live.rows === 0) return null;
   const capped = Math.min(999, Math.round((live.rows / live.segments / estRows) * 100));
   return finished ? Math.max(100, capped) : capped;
 }
@@ -318,26 +324,30 @@ export const EMPTY_SLICE_TIMING: SliceTiming = { activeMs: {}, rawRows: {} };
  * per-slice CPU/wall time any more than it has real segment counts), so
  * "how long has this slice been running" is approximated the same way the
  * rest of this Watch feature approximates progress: by observing it from
- * outside, one poll at a time. A slice counts as active for a given
- * interval if at least one of its nodes has any live rows in shmem
- * (rows > 0); the interval's wall-clock length gets added to that
- * slice's total.
+ * outside, one poll at a time. A slice counts as active for an interval
+ * as long as at least one of its nodes still has a shmem entry — even a
+ * zero-row placeholder left by a recycled leaf's coord dispatcher. The
+ * interval's wall-clock length gets added to that slice's total.
  *
- * We deliberately don't require rows to have *grown* since the previous
- * poll: Motion and Hash nodes stop counting the moment their phase
- * completes (a Hash reports its build-side row count and stays there; a
- * Redistribute Motion reports total rows sent and stays there), yet the
- * slice they belong to is still alive as long as another slice downstream
- * is pulling from it. A "grew this interval" check would drop that slice's
- * credit the moment its phase finished, even though the slice as a whole
- * hasn't. rawRows is kept as bookkeeping for callers that still want
- * per-nid delta information but isn't consulted by the active-slice
- * decision.
+ * The credit rule is deliberately *presence*, not *rows produced*:
  *
- * Purely-hoarder slices — a slice whose only nodes are Sort / top-of-plan
- * Aggregate / top-of-plan Limit — still legitimately show 0 through the
- * accumulation phase and only pop above zero for the final emit; that's
- * an accurate reflection of "no observable tuple flow", not a scoring bug.
+ *   - Motion/Hash nodes flatline at their final row count the instant
+ *     their phase completes, but their shmem row stays until the whole
+ *     slice's gang tears down — matches the reality that the slice is
+ *     still alive downstream.
+ *   - Fast dim-table leaves recycle their worker slots almost immediately;
+ *     the only shmem entry left is a {segid=-1, rows=0} placeholder from
+ *     the coord dispatcher. Presence still counts them, so slices whose
+ *     leaves we only ever saw in that recycled state (slices 4/5/7 in a
+ *     typical star-join over a lineitem fact table) still get credit for
+ *     the wall time they were alive.
+ *   - Pure hoarders (Sort / top-of-plan Aggregate / top-of-plan Limit)
+ *     also register — their coord entries are present throughout, even
+ *     though they emit nothing until the very end. That's honest: the
+ *     slice's process *is* running, it's just accumulating.
+ *
+ * rawRows is kept as bookkeeping for callers that still want per-nid
+ * delta information but isn't consulted by the active-slice decision.
  */
 export function advanceSliceTiming(
   prev: SliceTiming,
@@ -346,8 +356,7 @@ export function advanceSliceTiming(
   dtMs: number,
 ): SliceTiming {
   const activeSlices = new Set<number>();
-  for (const [nidStr, stats] of Object.entries(freshByNode)) {
-    if (stats.rows <= 0) continue;
+  for (const nidStr of Object.keys(freshByNode)) {
     const sliceId = nidToSlice.get(Number(nidStr));
     if (sliceId != null) activeSlices.add(sliceId);
   }
@@ -468,4 +477,44 @@ export const SLICE_COLORS = [
 export function sliceColor(sliceId: number | null | undefined): string | null {
   if (sliceId == null || sliceId < 1) return null;
   return SLICE_COLORS[(sliceId - 1) % SLICE_COLORS.length];
+}
+
+// Per-node completion inferred from the plan tree's own topology plus
+// whatever gp_instrument_shmem_detail currently shows.
+//
+// Why this exists: the plugin recycles a node's per-segment Instrumentation
+// slots the instant that operator finishes (ExecEndNode), so any fast leaf
+// — a SeqScan on a dim table, its parent Hash, the Motion above it — is
+// left in shmem as a bare coordinator-dispatcher row with segid=-1 and
+// rows=0 while the query is still running elsewhere. Reading that at face
+// value made slices 4/5/6/7 render as "0 progress everywhere" long after
+// their gangs had done their job, even though the boundary Motion above
+// them was still visibly moving rows.
+//
+// Rescue: data flows *up* the tree. If any ancestor of node N has rows > 0
+// in shmem, then N must have produced (or at minimum executed and returned
+// zero) — otherwise nothing would be available for that ancestor to hold.
+// So a node with no shmem rows of its own but a live ancestor is
+// 'completed'. A node with rows > 0 is 'active'. A node with neither its
+// own rows nor a live ancestor is 'idle' — either genuinely not started
+// yet, or a top-of-plan hoarder (Sort/Aggregate/Limit) still buffering.
+export type NodeCompletionState = 'active' | 'completed' | 'idle';
+
+export function computeNodeCompletionStates(
+  root: PlanNode | null,
+  liveNodes: Record<number, LiveNodeStats> | undefined,
+): Record<number, NodeCompletionState> {
+  const result: Record<number, NodeCompletionState> = {};
+  if (!root) return result;
+  function walk(node: PlanNode, ancestorHasRows: boolean) {
+    const nid = node.Nid;
+    const live = nid != null ? liveNodes?.[nid] : undefined;
+    const hasRows = live != null && live.rows > 0;
+    if (nid != null) {
+      result[nid] = hasRows ? 'active' : ancestorHasRows ? 'completed' : 'idle';
+    }
+    (node.Plans ?? []).forEach(c => walk(c, ancestorHasRows || hasRows));
+  }
+  walk(root, false);
+  return result;
 }

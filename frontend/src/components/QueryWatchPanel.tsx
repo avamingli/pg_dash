@@ -43,22 +43,17 @@ function aggregateByNode(nodes: QueryProgressNode[]): Record<number, LiveNodeSta
     // nodes like Materialize roll most of their total into ntuples quickly,
     // so summing both is correct for either case without needing to know
     // which kind of node this is.
-    const rows = n.ntuples + n.tuplecount;
-    // Skip zero-row shmem entries. Once a fast leaf (e.g. a SeqScan on a
-    // small dim table) finishes, the executor recycles its per-segment
-    // Instrumentation slots, leaving only the coordinator's dispatcher
-    // placeholder — a row with segid=-1 and rows=0. Counting that as
-    // "the node reports 0 rows across 1 segment" turned the whole node's
-    // completion into 0/estRows*100 = 0%, which reads as "stuck at 0%"
-    // even though its parent Motion above is happily reporting the tens
-    // of thousands of rows the scan clearly produced. Skipping empties
-    // keeps liveNodes[nid] absent for these nodes, so downstream (%,
-    // "N rows" chip) renders as "—" rather than a misleading zero.
-    // mergeLiveNodes' Math.max still preserves any earlier non-zero
-    // reading, so a node we did see with real rows never regresses.
-    if (rows <= 0) continue;
+    //
+    // Keep zero-row entries. A shmem row of {segid=-1, rows=0} left behind
+    // by a finished leaf's recycled slot still carries "this node exists in
+    // the running query"; dropping it here removed the whole dim-table
+    // subtree from liveNodes, which killed edge animation and slice-timing
+    // credit for those slices even though their gang processes were still
+    // alive. estimateCompletionPct handles the 0-rows case by returning
+    // null (renders as "—"), not by pretending it's 0% complete — so we
+    // don't have to lie at the aggregation layer to avoid a misleading %.
     const entry = byNode[n.nid] ?? (byNode[n.nid] = { rows: 0, segments: new Set() });
-    entry.rows += rows;
+    entry.rows += n.ntuples + n.tuplecount;
     entry.segments.add(n.segid);
   }
   const result: Record<number, LiveNodeStats> = {};

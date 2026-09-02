@@ -10,7 +10,7 @@ import {
   Route,
 } from 'lucide-react';
 import {
-  type PlanNode, type LiveNodeStats, type SliceSummary,
+  type PlanNode, type LiveNodeStats, type SliceSummary, type NodeCompletionState,
   nodeLabel, rowEstimateRatio, getTotalTime, formatMs, estimateCompletionPct, sliceColor,
 } from '@/lib/planTree';
 import SliceSummaryPanel from '@/components/SliceSummaryPanel';
@@ -168,6 +168,14 @@ interface PlanGraphProps {
   rootTime: number;
   nodeIds?: Map<PlanNode, number>;
   liveNodes?: Record<number, LiveNodeStats>;
+  /**
+   * Per-nid state ('active' | 'completed' | 'idle'), inferred by
+   * computeNodeCompletionStates from the tree topology + liveNodes. Used
+   * to distinguish nodes still producing rows from nodes whose shmem
+   * slots recycled but whose ancestors are visibly holding data (so they
+   * clearly executed) — see that helper's own doc for the reasoning.
+   */
+  nodeStates?: Record<number, NodeCompletionState>;
   /** Query has ended — switches the live green fill/pulse to a calmer "done" look. */
   finished?: boolean;
   /** Viewport height available for the graph; defaults to a fixed size for the Watch panel's fixed-width sidebar. Ignored in fullscreen mode. */
@@ -192,7 +200,7 @@ const ZOOM_MAX = 2;
 const PAN_CLICK_THRESHOLD = 4;
 
 export default function PlanGraph({
-  root, rootTime, nodeIds, liveNodes, finished, maxHeight = 460,
+  root, rootTime, nodeIds, liveNodes, nodeStates, finished, maxHeight = 460,
   sliceSummaries, runTimeMs, estProgressPct,
 }: PlanGraphProps) {
   const [selected, setSelected] = useState<PlanNode | null>(null);
@@ -368,7 +376,12 @@ export default function PlanGraph({
             // the plain static gray line.
             const childNid = child.node.Nid ?? nodeIds?.get(child.node);
             const childLive = childNid != null ? liveNodes?.[childNid] : undefined;
-            const flowing = childLive != null && !finished;
+            // Edge animates only when the child is currently producing —
+            // 'completed' children have already handed their rows off, so
+            // painting a marching-ants arrow over them reads as "still
+            // flowing" when the tuple stream is long done.
+            const childState = childNid != null ? nodeStates?.[childNid] : undefined;
+            const flowing = childState === 'active' && childLive != null && !finished;
             return (
               <path
                 key={`${ln.node.Nid ?? ln.x}-${i}`}
@@ -407,33 +420,42 @@ export default function PlanGraph({
                 ? finished ? 'border-blue-600/50' : 'border-emerald-600/60'
                 : 'border-zinc-700';
 
-          // Liquid-fill progress, rising from the bottom — the closest
-          // honest equivalent to GPCC's wave decoration we can draw from
-          // real data: a known % fills that far; an active node whose %
-          // isn't computable yet gets an indeterminate shimmer instead of a
-          // fabricated height. Both layers stay mounted the whole time
-          // (never conditionally unmounted) and cross-fade via opacity —
-          // swapping which div renders would swap DOM nodes, which skips
-          // any CSS transition entirely, which is exactly why the
-          // running(green)->finished(blue) switch used to look like a hard
-          // jump instead of the smooth 500ms color/height change below.
+          // Liquid-fill state — one visual family (green = produced data)
+          // where fill *height* carries the "how done" signal:
+          //   state='active' — currently reporting rows > 0 in shmem;
+          //     green fill at pct% (or shimmer if we can't %-ize), pulsing
+          //     green dot so it reads as *currently producing*.
+          //   state='completed' — inferred done (rows=0 of own but an
+          //     ancestor is holding rows, so data must have flowed
+          //     through); green fill at 100%. No dot, no shimmer.
+          //   state='idle' — no rows anywhere in this subtree's path
+          //     upward; either genuinely not started or a top-of-plan
+          //     hoarder still buffering. Empty.
+          //   finished (whole query done) — collapses every node to
+          //     'completed'. Green 100% everywhere instead of a jarring
+          //     blue overlay: the terminal state reads as "everything
+          //     filled up", continuous with the run's own visual story.
+          const rawState: NodeCompletionState = nid != null
+            ? (nodeStates?.[nid] ?? 'idle')
+            : (live != null && live.rows > 0 ? 'active' : 'idle');
+          const state: NodeCompletionState = finished ? 'completed' : rawState;
           const fillPct = pct != null ? Math.min(100, Math.max(4, pct)) : null;
-          const showShimmer = fillPct == null && !finished;
+          const greenFillPct = state === 'completed' ? 100 : (state === 'active' ? (fillPct ?? 4) : 0);
+          const showShimmer = state === 'active' && fillPct == null;
           // Glow is reserved for "healthy and actively running" — an
           // estimate-error or selected node already has its own strong
           // border color to carry attention, a second glowing halo on top
           // would just compete with it instead of adding information.
-          const isRunning = live != null && !finished && ratio <= 10;
+          const isRunning = state === 'active' && ratio <= 10;
 
-          // Two boxShadow signals stack on the card: the slice-color left
-          // stripe (always shown when the node has a slice id) and the
-          // running-node emerald glow. Both go through the same boxShadow
-          // property so their order matters — inset ones first so they
-          // don't get clipped by the outer glow.
-          const shadowParts: string[] = [];
-          if (sliceHex) shadowParts.push(`inset 3px 0 0 ${sliceHex}`);
-          if (isRunning) shadowParts.push('0 0 0 1px rgba(16,185,129,0.25), 0 0 16px 2px rgba(16,185,129,0.35)');
-          const boxShadow = shadowParts.length ? shadowParts.join(', ') : undefined;
+          // Running glow — an outer emerald halo. The slice-color left
+          // stripe used to live in the same boxShadow but was too subtle
+          // (a 3px inset never really registered next to the node's own
+          // colored border); it's now a real div (below), which we can
+          // widen freely without competing with anything else.
+          const boxShadow = isRunning
+            ? '0 0 0 1px rgba(16,185,129,0.25), 0 0 16px 2px rgba(16,185,129,0.35)'
+            : undefined;
 
           return (
             <button
@@ -445,17 +467,31 @@ export default function PlanGraph({
                 boxShadow,
               }}
             >
+              {sliceHex && (
+                <div
+                  className="absolute left-0 top-0 bottom-0 w-1.5"
+                  style={{ backgroundColor: sliceHex }}
+                  aria-hidden="true"
+                />
+              )}
               {isRunning && <div className="absolute inset-0 rounded-lg pg-glow" style={{ boxShadow: '0 0 20px 4px rgba(16,185,129,0.45)' }} />}
 
-              {live != null && (
+              {/* Green liquid: rises to pct% for active, sits at 100% for
+                  completed. One color family across the whole life of the
+                  query — "everything below the current work has filled
+                  up; the current work is still rising" — so query end is
+                  just the natural conclusion, not a color jump.
+                  left-1.5 leaves the slice-color stripe on the left
+                  visible even when the fill is at 100%. */}
+              {(state === 'active' || state === 'completed') && (
                 <>
                   <div
-                    className="absolute bottom-0 left-0 right-0 h-full pg-shimmer transition-opacity duration-500"
+                    className="absolute bottom-0 left-1.5 right-0 h-full pg-shimmer transition-opacity duration-500"
                     style={{ opacity: showShimmer ? 1 : 0 }}
                   />
                   <div
-                    className={`absolute bottom-0 left-0 right-0 transition-all duration-500 ${finished ? 'bg-blue-500/25' : 'bg-emerald-500/25'}`}
-                    style={{ height: `${fillPct ?? 4}%`, opacity: showShimmer ? 0 : 1 }}
+                    className="absolute bottom-0 left-1.5 right-0 bg-emerald-500/25 transition-all duration-500"
+                    style={{ height: `${greenFillPct}%`, opacity: showShimmer ? 0 : 1 }}
                   />
                 </>
               )}
@@ -478,11 +514,19 @@ export default function PlanGraph({
               <div className="relative px-2 text-[10px] text-zinc-500 truncate">
                 {relation ? `on ${relation}` : ' '}
               </div>
-              <div className={`relative px-2 text-[10px] font-mono flex items-center gap-1 transition-colors duration-500 ${finished ? 'text-blue-300' : 'text-emerald-300'}`}>
-                {live != null && (
-                  <span className={`w-1 h-1 rounded-full bg-emerald-400 inline-block shrink-0 transition-opacity duration-500 ${finished ? 'opacity-0' : 'opacity-100 animate-pulse'}`} />
+              <div className="relative px-2 text-[10px] font-mono flex items-center gap-1 text-emerald-300">
+                {state === 'active' && (
+                  <span className="w-1 h-1 rounded-full bg-emerald-400 inline-block shrink-0 animate-pulse" />
                 )}
-                {live != null ? `${live.rows.toLocaleString()} rows${pct != null ? ` ~${pct}%` : ''}` : ' '}
+                {state === 'active' && live
+                  ? `${live.rows.toLocaleString()} rows${pct != null ? ` ~${pct}%` : ''}`
+                  : state === 'completed'
+                    // Fast leaves recycled before we ever measured them, so
+                    // we don't have real "N rows" to show — surface the
+                    // planner estimate as the best available proxy, marked
+                    // with ≈ to make its approximate nature explicit.
+                    ? (node['Plan Rows'] != null ? `≈ ${node['Plan Rows'].toLocaleString()} rows` : '100%')
+                    : ' '}
               </div>
             </button>
           );

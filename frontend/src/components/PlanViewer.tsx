@@ -1,11 +1,11 @@
-import { useState } from 'react';
-import { ChevronRight, ChevronDown } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { ChevronRight, ChevronDown, Check } from 'lucide-react';
 import type { QueryProgressPlanNode } from '@/types/metrics';
 import {
-  type PlanNode, type LiveNodeStats, type SliceSummary,
+  type PlanNode, type LiveNodeStats, type SliceSummary, type NodeCompletionState,
   assignNodeIds, buildRealPlanTree, parsePlan, parseOptimizer,
   getTotalTime, getRootTotalTime, rowEstimateRatio, nodeColor, formatMs,
-  nodeLabel, estimateCompletionPct, sliceColor,
+  nodeLabel, estimateCompletionPct, sliceColor, computeNodeCompletionStates,
 } from '@/lib/planTree';
 import PlanGraph from '@/components/PlanGraph';
 
@@ -56,12 +56,13 @@ interface PlanViewerProps {
 
 // ── Components ──
 
-function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes, finished }: {
+function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes, nodeStates, finished }: {
   node: PlanNode;
   depth: number;
   rootTime: number;
   nodeIds?: Map<PlanNode, number>;
   liveNodes?: Record<number, LiveNodeStats>;
+  nodeStates?: Record<number, NodeCompletionState>;
   finished?: boolean;
 }) {
   // Default every node expanded — this is a monitoring view where the
@@ -104,7 +105,7 @@ function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes, finished }: {
 
       <div
         className={`rounded border ${color} mb-1 relative overflow-hidden`}
-        style={sliceHex ? { boxShadow: `inset 3px 0 0 ${sliceHex}` } : undefined}
+        style={sliceHex ? { boxShadow: `inset 5px 0 0 ${sliceHex}` } : undefined}
       >
         {/* Header */}
         <div
@@ -152,14 +153,26 @@ function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes, finished }: {
               <span className="text-zinc-600">x{node['Actual Loops']}</span>
             )}
 
-            {/* Live progress (query still running — no Actual Rows/Time yet) */}
-            {live != null && (
+            {/* Live progress (query still running — no Actual Rows/Time yet).
+                Three shapes: 'active' = rows > 0, show live count + %;
+                'completed' = no rows of own, but ancestor has rows so data
+                must have flowed through (dim done chip, no % since we
+                never measured); 'idle' = shows nothing (root hoarders /
+                truly not started). See computeNodeCompletionStates for the
+                topology reasoning. */}
+            {nid != null && nodeStates?.[nid] === 'active' && live && live.rows > 0 && (
               <span className="flex items-center gap-1.5 font-mono text-emerald-400" title={`${live.segments} segment(s) reporting`}>
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse inline-block" />
                 {live.rows.toLocaleString()} rows
                 {completionPct != null && (
                   <span className="text-emerald-500/70">~{completionPct}%</span>
                 )}
+              </span>
+            )}
+            {nid != null && (nodeStates?.[nid] === 'completed' || finished) && nodeStates?.[nid] !== 'active' && (
+              <span className="flex items-center gap-1 font-mono text-emerald-400/70" title="Inferred completion: an ancestor node has already pulled data, so this node executed and its shmem slot was recycled. Row count is the planner estimate.">
+                <Check size={11} />
+                {node['Plan Rows'] != null ? `≈ ${node['Plan Rows'].toLocaleString()} rows` : '100%'}
               </span>
             )}
           </div>
@@ -216,7 +229,7 @@ function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes, finished }: {
       {open && hasChildren && (
         <div className="relative">
           {node.Plans!.map((child, i) => (
-            <PlanNodeView key={i} node={child} depth={depth + 1} rootTime={rootTime} nodeIds={nodeIds} liveNodes={liveNodes} finished={finished} />
+            <PlanNodeView key={i} node={child} depth={depth + 1} rootTime={rootTime} nodeIds={nodeIds} liveNodes={liveNodes} nodeStates={nodeStates} finished={finished} />
           ))}
         </div>
       )}
@@ -232,6 +245,15 @@ export default function PlanViewer({ plan, liveNodes, realPlan, finished, segmen
   const root = usingRealPlan ? buildRealPlanTree(realPlan!, segments) : parsePlan(plan);
   const isORCA = parseOptimizer(plan) === 'GPORCA';
   const nodeIds = !usingRealPlan && root ? assignNodeIds(root, isORCA) : undefined;
+
+  // Per-node "did this actually run" state derived from tree topology +
+  // current liveNodes — lets us mark slice 4/5/6/7-style leaves as done
+  // even after their shmem slots recycled, by walking up from each node and
+  // finding an ancestor that's still holding rows.
+  const nodeStates = useMemo(
+    () => computeNodeCompletionStates(root, liveNodes),
+    [root, liveNodes]
+  );
 
   if (!root) {
     return (
@@ -293,12 +315,12 @@ export default function PlanViewer({ plan, liveNodes, realPlan, finished, segmen
         </pre>
       ) : viewMode === 'graph' ? (
         <PlanGraph
-          root={root} rootTime={rootTime} nodeIds={nodeIds} liveNodes={liveNodes} finished={finished} maxHeight={graphMaxHeight}
+          root={root} rootTime={rootTime} nodeIds={nodeIds} liveNodes={liveNodes} nodeStates={nodeStates} finished={finished} maxHeight={graphMaxHeight}
           sliceSummaries={sliceSummaries} runTimeMs={runTimeMs} estProgressPct={estProgressPct}
         />
       ) : (
         <div className="p-4">
-          <PlanNodeView node={root} depth={0} rootTime={rootTime} nodeIds={nodeIds} liveNodes={liveNodes} finished={finished} />
+          <PlanNodeView node={root} depth={0} rootTime={rootTime} nodeIds={nodeIds} liveNodes={liveNodes} nodeStates={nodeStates} finished={finished} />
         </div>
       )}
     </div>
