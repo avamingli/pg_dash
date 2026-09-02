@@ -21,8 +21,12 @@ import SliceSummaryPanel from '@/components/SliceSummaryPanel';
 // aimed at "see every node's state at a glance" rather than "drill down
 // one branch at a time".
 
-const NODE_W = 176;
-const NODE_H = 60;
+// Card size is fixed so the layout engine (leaf-column grid) stays simple.
+// Icon and slice pill sit as absolute corner badges (top-left / top-right)
+// instead of stealing width from the label row, so the label can wrap up
+// to 2 lines while the card stays compact.
+const NODE_W = 192;
+const NODE_H = 68;
 const H_GAP = 28;
 const V_GAP = 46;
 const PAD = 24;
@@ -496,25 +500,40 @@ export default function PlanGraph({
                 </>
               )}
 
-              <div className="relative flex items-center gap-1.5 px-2 pt-1.5">
-                <span className={`p-0.5 rounded ${categoryClass} shrink-0`}>
-                  <Icon size={11} />
+              {/* Corner badges: icon top-left, slice pill top-right.
+                  Absolute so they don't eat into the label row's width —
+                  lets the label wrap up to 2 lines using the full body
+                  span (pl-7 pr-8 clears both corners). */}
+              <span
+                className={`absolute top-1 left-2.5 p-0.5 rounded ${categoryClass}`}
+                title={label}
+              >
+                <Icon size={11} />
+              </span>
+              {sliceId != null && sliceHex && (
+                <span
+                  className="absolute top-1 right-1.5 text-[9px] font-mono font-semibold px-1 rounded"
+                  style={{ color: sliceHex, backgroundColor: `${sliceHex}22`, border: `1px solid ${sliceHex}55` }}
+                  title={`slice ${sliceId}`}
+                >
+                  s{sliceId}
                 </span>
-                <span className="text-[11px] font-semibold text-zinc-100 truncate">{label}</span>
-                {sliceId != null && sliceHex && (
-                  <span
-                    className="ml-auto text-[9px] font-mono font-semibold px-1 rounded shrink-0"
-                    style={{ color: sliceHex, backgroundColor: `${sliceHex}22`, border: `1px solid ${sliceHex}55` }}
-                    title={`slice ${sliceId}`}
-                  >
-                    s{sliceId}
-                  </span>
-                )}
+              )}
+
+              {/* Body — label wraps up to 2 lines (line-clamp-2), relation
+                  stays single-line truncate (long qualified names would
+                  otherwise blow the card height). Both keep a title
+                  tooltip so full text is one hover away. */}
+              <div
+                className="relative text-[11px] font-semibold text-zinc-100 leading-snug break-words line-clamp-2 pl-7 pr-8 pt-1.5"
+                title={label}
+              >
+                {label}
               </div>
-              <div className="relative px-2 text-[10px] text-zinc-500 truncate">
+              <div className="relative pl-7 pr-2 text-[10px] text-zinc-500 truncate" title={relation || undefined}>
                 {relation ? `on ${relation}` : ' '}
               </div>
-              <div className="relative px-2 text-[10px] font-mono flex items-center gap-1 text-emerald-300">
+              <div className="relative pl-7 pr-2 text-[10px] font-mono flex items-center gap-1 text-emerald-300">
                 {state === 'active' && (
                   <span className="w-1 h-1 rounded-full bg-emerald-400 inline-block shrink-0 animate-pulse" />
                 )}
