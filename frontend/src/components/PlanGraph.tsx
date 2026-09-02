@@ -397,12 +397,13 @@ export default function PlanGraph({
             // the plain static gray line.
             const childNid = child.node.Nid ?? nodeIds?.get(child.node);
             const childLive = childNid != null ? liveNodes?.[childNid] : undefined;
-            // Edge animates only when the child is currently producing —
-            // 'completed' children have already handed their rows off, so
-            // painting a marching-ants arrow over them reads as "still
-            // flowing" when the tuple stream is long done.
-            const childState = childNid != null ? nodeStates?.[childNid] : undefined;
-            const flowing = childState === 'active' && childLive != null && !finished;
+            // Edge animates only when the child is currently producing
+            // tuples on the latest poll — the raw `growing` bit, not
+            // the classifier's 'active' state. 'active' now covers both
+            // producers and hoarder-consumers whose subtree is growing,
+            // but a consumer hasn't emitted anything yet so its outgoing
+            // edge shouldn't read as "data flowing up" here.
+            const flowing = !finished && childLive?.growing === true;
             return (
               <path
                 key={`${ln.node.Nid ?? ln.x}-${i}`}
@@ -575,8 +576,16 @@ export default function PlanGraph({
                 {state === 'active' && (
                   <span className="w-1 h-1 rounded-full bg-emerald-400 inline-block shrink-0 animate-pulse" />
                 )}
-                {state === 'active' && live
-                  ? `${live.rows.toLocaleString()} rows${pct != null ? ` ~${pct}%` : ''}`
+                {state === 'active'
+                  // "active" now covers two cases: a producer growing its
+                  // own rows, and a hoarder consumer whose subtree is
+                  // growing (Partial HashAgg pulling from a live HashJoin
+                  // below). Only the former has a measurable count to
+                  // show; the latter reads as "consuming" so it doesn't
+                  // render as blank or "0 rows".
+                  ? (live && live.rows > 0
+                      ? `${live.rows.toLocaleString()} rows${pct != null ? ` ~${pct}%` : ''}`
+                      : 'consuming')
                   : state === 'completed'
                     // Fast leaves recycled before we ever measured them, so
                     // we don't have real "N rows" to show — surface the

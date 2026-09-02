@@ -518,21 +518,33 @@ export function sliceColor(sliceId: number | null | undefined): string | null {
 // "rows > 0 = active" turned those hoarders into cards stuck at
 // partial fillPct forever, when in truth they were done.
 //
-// Rescue relies on two facts. First, data flows *up* the tree: if any
-// ancestor of node N is currently growing rows, then N has already
-// produced (or at least executed and returned zero) — otherwise nothing
-// would be available for that ancestor to pull. Second, "currently
-// growing" is a stronger, cleaner signal for active work than "has any
-// rows", and we get it from LiveNodeStats.growing (rows increased on
-// the most recent poll).
+// The classifier uses three facts, in priority order:
 //
-// Combining: active = own growing; completed = not growing but an
-// ancestor is; idle = no evidence either way (root hoarders still
-// buffering, or fast leaves whose entire chain finished so early we
-// missed them). Fast-leaf slices (SeqScan → Hash → Motion sender that
-// all recycled before we polled) still get resolved as 'completed' via
-// their still-growing upstream Aggregate/HashJoin, not from their own
-// shmem trace.
+//   1. `growing` — the node's own rows increased on the latest poll.
+//      This is the cleanest "I am producing right now" signal, from
+//      LiveNodeStats.growing.
+//
+//   2. `subtreeGrew` — some node below me is growing. For a hoarder
+//      like Partial HashAgg / Sort / final Aggregate the entire
+//      consumption phase has 0 own-output (it fills its internal state
+//      first, emits only when input is exhausted), so 'growing' would
+//      be false for the whole busy period. If any descendant is
+//      actively producing, I'm actively consuming — call that 'active'
+//      too.
+//
+//   3. `ancestorGrowing` — some node above me is growing. Data flows
+//      up the tree, so anything above me holding rows must have
+//      received them from my subtree, which means I've already done
+//      my part. Call that 'completed', even if my own shmem row is a
+//      recycled placeholder with rows=0.
+//
+//   4. Nothing → 'idle' (root hoarder still buffering, fast leaf that
+//      recycled before any poll, or query hasn't started).
+//
+// Fast dim-table subtrees (SeqScan → Hash → Motion sender that all
+// recycled before we polled) still resolve as 'completed' via their
+// still-growing upstream Aggregate/HashJoin — not from their own
+// shmem trace, which has nothing to show.
 export type NodeCompletionState = 'active' | 'completed' | 'idle';
 
 export function computeNodeCompletionStates(
@@ -541,21 +553,41 @@ export function computeNodeCompletionStates(
 ): Record<number, NodeCompletionState> {
   const result: Record<number, NodeCompletionState> = {};
   if (!root) return result;
-  // Walk root → leaves, threading an "any ancestor is currently
-  // producing rows" accumulator. Active = the node itself grew rows on
-  // the latest poll (not just "rows > 0" — a Hash that finished building
-  // is still holding N rows in shmem while its parent HashJoin probes,
-  // but the Hash is done). Completed = not actively producing but an
-  // ancestor is, so data must have flowed through this node to get up
-  // there. Idle = no evidence in either direction.
-  function walk(node: PlanNode, ancestorGrowing: boolean) {
+  // Walk root → leaves, but recurse *before* assigning state so each
+  // node also sees whether any node in its own subtree is growing.
+  // Three signals feed the assignment:
+  //   growing        — this node's own rows increased on the latest poll
+  //   ancestorGrowing — any node above me (toward root) is currently
+  //                     growing, which means data has already flowed
+  //                     through me to reach them
+  //   subtreeGrew    — any node in my subtree (toward leaves) is growing,
+  //                    which for a hoarder like Partial HashAgg or Sort
+  //                    is the only signal that I'm currently consuming
+  //                    (I won't emit anything myself until my input is
+  //                    exhausted — so 'growing' would be false for the
+  //                    entire consumption phase)
+  // Priority: growing > subtreeGrew > ancestorGrowing > idle. That way
+  // a consumer whose ancestor is *also* growing (rare, but possible if
+  // the plan is a chain of hoarders each feeding the next) still reads
+  // as 'active' rather than 'completed'.
+  function walk(node: PlanNode, ancestorGrowing: boolean): boolean {
     const nid = node.Nid;
     const live = nid != null ? liveNodes?.[nid] : undefined;
     const growing = live?.growing === true;
-    if (nid != null) {
-      result[nid] = growing ? 'active' : ancestorGrowing ? 'completed' : 'idle';
+    let subtreeGrew = false;
+    for (const c of node.Plans ?? []) {
+      if (walk(c, ancestorGrowing || growing)) subtreeGrew = true;
     }
-    (node.Plans ?? []).forEach(c => walk(c, ancestorGrowing || growing));
+    if (nid != null) {
+      result[nid] = growing
+        ? 'active'
+        : subtreeGrew
+          ? 'active'
+          : ancestorGrowing
+            ? 'completed'
+            : 'idle';
+    }
+    return subtreeGrew || growing;
   }
   walk(root, false);
   return result;
