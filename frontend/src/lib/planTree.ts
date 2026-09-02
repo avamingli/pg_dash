@@ -486,15 +486,20 @@ export function sliceLabel(node: PlanNode): string | null {
 // the tree, in the graph card's left stripe, and in SliceSummaryPanel's
 // legend. Repeats every 8 slices, which is fine visually because at that
 // depth the tree structure already tells them apart.
+//
+// Emerald and lime are deliberately excluded: the bottom progress strip on
+// each card is emerald, and a slice stripe that shared the same hue read
+// as an accidental extension of the progress signal. Everything left is
+// visibly distinct from the progress green, alternating warm/cool.
 export const SLICE_COLORS = [
   '#3b82f6', // blue-500
   '#f59e0b', // amber-500
-  '#10b981', // emerald-500
   '#a855f7', // purple-500
   '#ec4899', // pink-500
   '#06b6d4', // cyan-500
   '#f97316', // orange-500
-  '#84cc16', // lime-500
+  '#6366f1', // indigo-500
+  '#f43f5e', // rose-500
 ];
 
 export function sliceColor(sliceId: number | null | undefined): string | null {

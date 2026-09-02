@@ -30,6 +30,10 @@ const NODE_H = 68;
 const H_GAP = 28;
 const V_GAP = 46;
 const PAD = 24;
+// Height of the bottom progress strip. Bigger than a classic Chrome-tab
+// hairline so it actually registers at this card size, but still thin
+// enough to stay in its own zone under the text stack.
+const PROGRESS_H = 6;
 
 interface LayoutNode {
   node: PlanNode;
@@ -480,72 +484,40 @@ export default function PlanGraph({
               )}
               {isRunning && <div className="absolute inset-0 rounded-lg pg-glow" style={{ boxShadow: '0 0 20px 4px rgba(16,185,129,0.45)' }} />}
 
-              {/* Green liquid: rises to pct% for active, sits at 100% for
-                  completed. One color family across the whole life of the
-                  query — "everything below the current work has filled
-                  up; the current work is still rising" — so query end is
-                  just the natural conclusion, not a color jump.
-                  left-1.5 leaves the slice-color stripe on the left
-                  visible even when the fill is at 100%. */}
+              {/* Progress strip along the bottom edge of the card.
+                  Chrome/YouTube/Airflow convention: keep the progress bar
+                  in a thin dedicated zone so it never overlaps text or
+                  competes with the label stack for attention. Shimmer
+                  runs across the filled portion while active, giving the
+                  "still working" cue without needing waves on the body.
+                  For shimmer-only state (rows>0 but no plan estimate),
+                  the base track is filled full-width with a moving stripe
+                  pattern — same "unknown but active" language as before. */}
               {(state === 'active' || state === 'completed') && (
-                <>
-                  <div
-                    className="absolute bottom-0 left-1.5 right-0 h-full pg-shimmer transition-opacity duration-500"
-                    style={{ opacity: showShimmer ? 1 : 0 }}
-                  />
-                  <div
-                    className="absolute bottom-0 left-1.5 right-0 bg-emerald-500/25 transition-all duration-500"
-                    style={{ height: `${greenFillPct}%`, opacity: showShimmer ? 0 : 1 }}
-                  />
-                  {/* GPCC-style liquid surface: two SVG waves crest at
-                      the top of the fill and drift horizontally at
-                      different speeds (parallax), climbing with fillPct
-                      so "progress rises" and "still working" show as one
-                      integrated motion. Amplitude is deliberately loud
-                      (crest to trough ≈ 10px) to actually register on a
-                      ~192px card — the previous polite ripple wasn't. */}
-                  {state === 'active' && !showShimmer && (
+                <div
+                  className="absolute left-1.5 right-0 bottom-0 overflow-hidden bg-zinc-800/70"
+                  style={{ height: PROGRESS_H }}
+                  aria-hidden="true"
+                >
+                  {showShimmer ? (
+                    <div className="absolute inset-0 pg-shimmer" />
+                  ) : (
                     <>
-                      <svg
-                        aria-hidden="true"
-                        className="absolute left-1.5 pg-wave-back pointer-events-none"
-                        preserveAspectRatio="none"
-                        viewBox="0 0 200 20"
-                        style={{
-                          bottom: `calc(${greenFillPct}% - 8px)`,
-                          width: 'calc((100% - 6px) * 2)',
-                          height: 16,
-                        }}
-                      >
-                        <path
-                          d="M0,10 Q25,-2 50,10 T100,10 T150,10 T200,10 V20 H0 Z"
-                          fill="rgba(16,185,129,0.35)"
-                        />
-                      </svg>
-                      <svg
-                        aria-hidden="true"
-                        className="absolute left-1.5 pg-wave-front pointer-events-none"
-                        preserveAspectRatio="none"
-                        viewBox="0 0 200 20"
-                        style={{
-                          bottom: `calc(${greenFillPct}% - 6px)`,
-                          width: 'calc((100% - 6px) * 2)',
-                          height: 14,
-                        }}
-                      >
-                        <path
-                          d="M0,10 Q25,22 50,10 T100,10 T150,10 T200,10 V20 H0 Z"
-                          fill="rgba(52,211,153,0.65)"
-                        />
-                      </svg>
                       <div
-                        aria-hidden="true"
-                        className="absolute left-1.5 right-0 h-px bg-emerald-300 pg-surface pointer-events-none"
-                        style={{ bottom: `${greenFillPct}%` }}
+                        className="absolute inset-y-0 left-0 bg-emerald-500 transition-[width] duration-500"
+                        style={{ width: `${greenFillPct}%` }}
                       />
+                      {state === 'active' && (
+                        <div
+                          className="absolute inset-y-0 left-0 overflow-hidden"
+                          style={{ width: `${greenFillPct}%` }}
+                        >
+                          <div className="absolute inset-0 pg-progress-shimmer" />
+                        </div>
+                      )}
                     </>
                   )}
-                </>
+                </div>
               )}
 
               {/* Corner badges: icon top-left, slice pill top-right.
@@ -571,14 +543,19 @@ export default function PlanGraph({
               {/* Body — label wraps up to 2 lines (line-clamp-2), relation
                   stays single-line truncate (long qualified names would
                   otherwise blow the card height). Both keep a title
-                  tooltip so full text is one hover away. */}
+                  tooltip so full text is one hover away. Progress is
+                  confined to the bottom strip, so text needs no
+                  drop-shadow to fight a moving background. */}
               <div
                 className="relative text-[11px] font-semibold text-zinc-100 leading-snug break-words line-clamp-2 pl-7 pr-8 pt-1.5"
                 title={label}
               >
                 {label}
               </div>
-              <div className="relative pl-7 pr-2 text-[10px] text-zinc-500 truncate" title={relation || undefined}>
+              <div
+                className="relative pl-7 pr-2 text-[10px] text-zinc-400 truncate"
+                title={relation || undefined}
+              >
                 {relation ? `on ${relation}` : ' '}
               </div>
               <div className="relative pl-7 pr-2 text-[10px] font-mono flex items-center gap-1 text-emerald-300">
