@@ -58,7 +58,10 @@ function aggregateByNode(nodes: QueryProgressNode[]): Record<number, LiveNodeSta
   }
   const result: Record<number, LiveNodeStats> = {};
   for (const [nid, v] of Object.entries(byNode)) {
-    result[Number(nid)] = { rows: v.rows, segments: v.segments.size };
+    // growing is filled in during mergeLiveNodes, where we have the prior
+    // poll's rows to compare against; a fresh aggregate on its own doesn't
+    // know whether this is "N rows and rising" or "N rows and stopped".
+    result[Number(nid)] = { rows: v.rows, segments: v.segments.size, growing: false };
   }
   return result;
 }
@@ -70,17 +73,37 @@ function aggregateByNode(nodes: QueryProgressNode[]): Record<number, LiveNodeSta
 // poll returns read as that node's progress reverting to 0 the moment it
 // actually finished. Merge instead: a nid missing from the latest poll keeps
 // its last known stats, and a nid present in both never goes backwards.
+//
+// Also computes each surviving nid's `growing` bit — did rows increase on
+// THIS merge vs the last one? computeNodeCompletionStates uses this to tell
+// a still-producing node ("Hash Join probing") from a plateau'd one ("Hash
+// finished building, waiting to be probed") — they both have rows > 0, so
+// only the growth signal distinguishes them.
 function mergeLiveNodes(
   prev: Record<number, LiveNodeStats>,
   next: Record<number, LiveNodeStats>,
 ): Record<number, LiveNodeStats> {
-  const merged: Record<number, LiveNodeStats> = { ...prev };
+  const merged: Record<number, LiveNodeStats> = {};
+  // Start by copying prev, but clear each entry's growing bit — nids not
+  // present in `next` this poll definitionally aren't growing this poll.
+  for (const [key, stats] of Object.entries(prev)) {
+    merged[Number(key)] = { ...stats, growing: false };
+  }
   for (const [key, stats] of Object.entries(next)) {
     const nid = Number(key);
-    const existing = merged[nid];
-    merged[nid] = existing
-      ? { rows: Math.max(existing.rows, stats.rows), segments: Math.max(existing.segments, stats.segments) }
-      : stats;
+    const existing = prev[nid];
+    if (existing) {
+      merged[nid] = {
+        rows: Math.max(existing.rows, stats.rows),
+        segments: Math.max(existing.segments, stats.segments),
+        growing: stats.rows > existing.rows,
+      };
+    } else {
+      // First time we see this nid: treat any non-zero rows as growth
+      // (there was nothing before, so the delta from "not seen" to "here"
+      // is real activity), and a 0-row placeholder appearance as idle.
+      merged[nid] = { ...stats, growing: stats.rows > 0 };
+    }
   }
   return merged;
 }

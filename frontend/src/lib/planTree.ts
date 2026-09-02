@@ -52,6 +52,17 @@ export interface PlanNode {
 export interface LiveNodeStats {
   rows: number;
   segments: number;
+  /**
+   * Whether rows increased on the most recent poll. Distinguishes an
+   * actually-producing node from one that finished producing but whose
+   * shmem slot is still held open by a downstream consumer (a Hash that
+   * built its table and is now being probed by its parent HashJoin; a
+   * Motion sender that finished emitting but whose receiver hasn't torn
+   * down yet). Both cases have rows > 0, but only the first one is still
+   * doing tuple work — using `rows > 0` alone to mean "active" left those
+   * hoarders stuck at a partial fillPct instead of reading as done.
+   */
+  growing: boolean;
 }
 
 const INDEX_NLJ_INNER_TYPES = new Set([
@@ -494,22 +505,29 @@ export function sliceColor(sliceId: number | null | undefined): string | null {
 // Per-node completion inferred from the plan tree's own topology plus
 // whatever gp_instrument_shmem_detail currently shows.
 //
-// Why this exists: the plugin recycles a node's per-segment Instrumentation
-// slots the instant that operator finishes (ExecEndNode), so any fast leaf
-// — a SeqScan on a dim table, its parent Hash, the Motion above it — is
-// left in shmem as a bare coordinator-dispatcher row with segid=-1 and
-// rows=0 while the query is still running elsewhere. Reading that at face
-// value made slices 4/5/6/7 render as "0 progress everywhere" long after
-// their gangs had done their job, even though the boundary Motion above
-// them was still visibly moving rows.
+// Why this exists: the plugin's slots are held open as long as some
+// downstream consumer needs them, so plenty of nodes stop producing
+// tuples long before their shmem row goes away — a Hash that finished
+// building is still pinned in shmem while its parent HashJoin probes,
+// a Motion sender's slot stays until the receiver tears down. Reading
+// "rows > 0 = active" turned those hoarders into cards stuck at
+// partial fillPct forever, when in truth they were done.
 //
-// Rescue: data flows *up* the tree. If any ancestor of node N has rows > 0
-// in shmem, then N must have produced (or at minimum executed and returned
-// zero) — otherwise nothing would be available for that ancestor to hold.
-// So a node with no shmem rows of its own but a live ancestor is
-// 'completed'. A node with rows > 0 is 'active'. A node with neither its
-// own rows nor a live ancestor is 'idle' — either genuinely not started
-// yet, or a top-of-plan hoarder (Sort/Aggregate/Limit) still buffering.
+// Rescue relies on two facts. First, data flows *up* the tree: if any
+// ancestor of node N is currently growing rows, then N has already
+// produced (or at least executed and returned zero) — otherwise nothing
+// would be available for that ancestor to pull. Second, "currently
+// growing" is a stronger, cleaner signal for active work than "has any
+// rows", and we get it from LiveNodeStats.growing (rows increased on
+// the most recent poll).
+//
+// Combining: active = own growing; completed = not growing but an
+// ancestor is; idle = no evidence either way (root hoarders still
+// buffering, or fast leaves whose entire chain finished so early we
+// missed them). Fast-leaf slices (SeqScan → Hash → Motion sender that
+// all recycled before we polled) still get resolved as 'completed' via
+// their still-growing upstream Aggregate/HashJoin, not from their own
+// shmem trace.
 export type NodeCompletionState = 'active' | 'completed' | 'idle';
 
 export function computeNodeCompletionStates(
@@ -518,14 +536,21 @@ export function computeNodeCompletionStates(
 ): Record<number, NodeCompletionState> {
   const result: Record<number, NodeCompletionState> = {};
   if (!root) return result;
-  function walk(node: PlanNode, ancestorHasRows: boolean) {
+  // Walk root → leaves, threading an "any ancestor is currently
+  // producing rows" accumulator. Active = the node itself grew rows on
+  // the latest poll (not just "rows > 0" — a Hash that finished building
+  // is still holding N rows in shmem while its parent HashJoin probes,
+  // but the Hash is done). Completed = not actively producing but an
+  // ancestor is, so data must have flowed through this node to get up
+  // there. Idle = no evidence in either direction.
+  function walk(node: PlanNode, ancestorGrowing: boolean) {
     const nid = node.Nid;
     const live = nid != null ? liveNodes?.[nid] : undefined;
-    const hasRows = live != null && live.rows > 0;
+    const growing = live?.growing === true;
     if (nid != null) {
-      result[nid] = hasRows ? 'active' : ancestorHasRows ? 'completed' : 'idle';
+      result[nid] = growing ? 'active' : ancestorGrowing ? 'completed' : 'idle';
     }
-    (node.Plans ?? []).forEach(c => walk(c, ancestorHasRows || hasRows));
+    (node.Plans ?? []).forEach(c => walk(c, ancestorGrowing || growing));
   }
   walk(root, false);
   return result;
