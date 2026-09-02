@@ -235,6 +235,19 @@ export default function PlanGraph({
 
   const selNid = selected?.Nid ?? (selected ? nodeIds?.get(selected) : undefined);
   const selLive = selNid != null ? liveNodes?.[selNid] : undefined;
+  // Same state/fill math as each card runs — reused in the detail panel
+  // so its progress row reads the exact same value as the card the user
+  // just clicked, with no drift or independent calculation.
+  const selRawState: NodeCompletionState = selNid != null
+    ? (nodeStates?.[selNid] ?? 'idle')
+    : (selLive != null && selLive.rows > 0 ? 'active' : 'idle');
+  const selState: NodeCompletionState = finished ? 'completed' : selRawState;
+  const selPct = estimateCompletionPct(selLive, selected?.['Plan Rows'], !!finished);
+  const selFillPct = selState === 'completed'
+    ? 100
+    : selState === 'active'
+      ? (selPct != null ? Math.min(100, Math.max(4, selPct)) : null)
+      : null;
 
   // Centers the tree in whatever the viewport's current size is, for a
   // given zoom level — shared by "fit" (fit's own computed scale) and
@@ -585,6 +598,51 @@ export default function PlanGraph({
         <span className="font-semibold text-zinc-200">{nodeLabel(selected)}</span>
         <button onClick={() => setSelected(null)} className="text-zinc-500 hover:text-zinc-300">×</button>
       </div>
+
+      {/* Same progress bar as the card, blown up 2× so it's actually
+          legible in the detail panel. Percentage/state text sits inline
+          on the right, matching the card's own text row. */}
+      {(selState === 'active' || selState === 'completed') && (
+        <div className="mb-3 flex items-center gap-2">
+          <div className="relative flex-1 h-2.5 overflow-hidden rounded bg-zinc-800/70">
+            {selFillPct == null ? (
+              <div className="absolute inset-0 pg-shimmer" />
+            ) : (
+              <>
+                <div
+                  className="absolute inset-y-0 left-0 bg-emerald-500 transition-[width] duration-500"
+                  style={{ width: `${selFillPct}%` }}
+                />
+                {selState === 'active' && (
+                  <div className="absolute inset-y-0 left-0 overflow-hidden" style={{ width: `${selFillPct}%` }}>
+                    <div className="absolute inset-0 pg-progress-shimmer" />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+          <span className="text-[11px] font-mono text-emerald-300 shrink-0 tabular-nums">
+            {selState === 'completed'
+              // A completed node is completed regardless of what its
+              // observed rows/estimate ratio came out to — floor the %
+              // at 100 so we never contradict the full progress bar
+              // right next to us with a "51%" number. If actual > est
+              // (overshoot), show the real overshoot value — it's
+              // useful signal about a bad planner estimate.
+              ? (selPct != null
+                  ? `${Math.max(100, selPct)}%`
+                  : selected['Plan Rows'] != null
+                    ? `≈ ${selected['Plan Rows'].toLocaleString()} rows`
+                    : '100%')
+              : selPct != null
+                ? `${selPct}%`
+                : selLive != null
+                  ? `${selLive.rows.toLocaleString()} rows`
+                  : 'active'}
+          </span>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-y-1.5 gap-x-4 text-zinc-400">
         {selected['Relation Name'] && (
           <div className="col-span-2">Relation: <span className="text-zinc-200 font-mono">{selected['Relation Name']}</span></div>
@@ -593,9 +651,13 @@ export default function PlanGraph({
         <div>
           Estimated Completion:{' '}
           <span className="text-zinc-200 font-mono">
-            {selNid != null && estimateCompletionPct(selLive, selected['Plan Rows'], !!finished) != null
-              ? `${estimateCompletionPct(selLive, selected['Plan Rows'], !!finished)}%`
-              : '—'}
+            {selState === 'completed'
+              // Match the progress bar's semantics: a done node reads as
+              // ≥100%, not whatever the observed-vs-estimate ratio was.
+              ? (selPct != null ? `${Math.max(100, selPct)}%` : '100%')
+              : selPct != null
+                ? `${selPct}%`
+                : '—'}
           </span>
         </div>
         <div>Live Rows (all segments): <span className="text-zinc-200 font-mono">{selLive?.rows.toLocaleString() ?? '—'}</span></div>
