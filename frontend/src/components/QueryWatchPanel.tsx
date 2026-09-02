@@ -36,7 +36,6 @@ function nowMs(): number {
 function aggregateByNode(nodes: QueryProgressNode[]): Record<number, LiveNodeStats> {
   const byNode: Record<number, { rows: number; segments: Set<number> }> = {};
   for (const n of nodes) {
-    const entry = byNode[n.nid] ?? (byNode[n.nid] = { rows: 0, segments: new Set() });
     // ntuples only accumulates once a scan *cycle* completes (InstrEndLoop) —
     // a plain single-pass node (e.g. a driving outer Seq Scan that never
     // rescans) stays at ntuples=0 for its entire run and only shows up in
@@ -44,7 +43,22 @@ function aggregateByNode(nodes: QueryProgressNode[]): Record<number, LiveNodeSta
     // nodes like Materialize roll most of their total into ntuples quickly,
     // so summing both is correct for either case without needing to know
     // which kind of node this is.
-    entry.rows += n.ntuples + n.tuplecount;
+    const rows = n.ntuples + n.tuplecount;
+    // Skip zero-row shmem entries. Once a fast leaf (e.g. a SeqScan on a
+    // small dim table) finishes, the executor recycles its per-segment
+    // Instrumentation slots, leaving only the coordinator's dispatcher
+    // placeholder — a row with segid=-1 and rows=0. Counting that as
+    // "the node reports 0 rows across 1 segment" turned the whole node's
+    // completion into 0/estRows*100 = 0%, which reads as "stuck at 0%"
+    // even though its parent Motion above is happily reporting the tens
+    // of thousands of rows the scan clearly produced. Skipping empties
+    // keeps liveNodes[nid] absent for these nodes, so downstream (%,
+    // "N rows" chip) renders as "—" rather than a misleading zero.
+    // mergeLiveNodes' Math.max still preserves any earlier non-zero
+    // reading, so a node we did see with real rows never regresses.
+    if (rows <= 0) continue;
+    const entry = byNode[n.nid] ?? (byNode[n.nid] = { rows: 0, segments: new Set() });
+    entry.rows += rows;
     entry.segments.add(n.segid);
   }
   const result: Record<number, LiveNodeStats> = {};
@@ -272,6 +286,7 @@ export default function QueryWatchPanel({ pid, sql, queryStart, onClose }: Query
           {hasRealPlan ? (
             <PlanViewer
               liveNodes={liveNodes} realPlan={realPlan} finished={finished}
+              segments={segmentsCount}
               sliceSummaries={sliceSummaries} runTimeMs={runTimeMs} estProgressPct={overallProgressPct}
             />
           ) : finished ? (

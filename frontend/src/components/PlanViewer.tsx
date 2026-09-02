@@ -38,6 +38,14 @@ interface PlanViewerProps {
   realPlan?: QueryProgressPlanNode[];
   /** Query has ended — passed through to the Graph view's fill/pulse styling. */
   finished?: boolean;
+  /**
+   * Cluster segment count — passed through to buildRealPlanTree so Motion
+   * nodes get their N:M fan-in/fan-out synthesized when the plugin ships
+   * motion_senders/motion_receivers as null (which whpg_plan_tree currently
+   * always does). Ignored on the EXPLAIN-JSON path (parsePlan already reads
+   * senders/receivers straight off the node).
+   */
+  segments?: number;
   /** Passed through to the Graph view's scroll container height. */
   graphMaxHeight?: number;
   /** Passed straight through to the Graph view — see PlanGraphProps' own comment for why it renders there and not as a sibling. */
@@ -218,10 +226,10 @@ function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes, finished }: {
 
 type ViewMode = 'graph' | 'tree' | 'raw';
 
-export default function PlanViewer({ plan, liveNodes, realPlan, finished, graphMaxHeight, sliceSummaries, runTimeMs, estProgressPct }: PlanViewerProps) {
+export default function PlanViewer({ plan, liveNodes, realPlan, finished, segments, graphMaxHeight, sliceSummaries, runTimeMs, estProgressPct }: PlanViewerProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('graph');
   const usingRealPlan = !!realPlan && realPlan.length > 0;
-  const root = usingRealPlan ? buildRealPlanTree(realPlan!) : parsePlan(plan);
+  const root = usingRealPlan ? buildRealPlanTree(realPlan!, segments) : parsePlan(plan);
   const isORCA = parseOptimizer(plan) === 'GPORCA';
   const nodeIds = !usingRealPlan && root ? assignNodeIds(root, isORCA) : undefined;
 
