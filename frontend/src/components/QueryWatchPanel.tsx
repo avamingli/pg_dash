@@ -225,11 +225,11 @@ export default function QueryWatchPanel({ pid, sql, queryStart, onClose }: Query
   // other live figure in this panel — a query that just finished snaps
   // this to 100% immediately via `finished`, instead of freezing at
   // whatever number happened to be in flight the moment it ended.
-  const sliceSummaries = sliceIds ? summarizeSlices(sliceIds, sliceTiming.activeMs) : [];
+  const runTimeMs = (finished ? lastPollAt : nowMs()) - startMs;
+  const sliceSummaries = sliceIds ? summarizeSlices(sliceIds, sliceTiming.activeMs, runTimeMs) : [];
   const overallProgressPct = rootMeta?.nid != null
     ? estimateCompletionPct(liveNodes[rootMeta.nid], rootMeta.estRows, finished)
     : null;
-  const runTimeMs = (finished ? lastPollAt : nowMs()) - startMs;
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end">

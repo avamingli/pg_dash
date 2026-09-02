@@ -374,23 +374,35 @@ export interface SliceSummary {
   label: string;
   activeMs: number;
   /**
-   * Share of the sum of every slice's own activeMs — deliberately not a
-   * share of the query's total wall-clock duration, since slices run
-   * concurrently (each as its own gang-member process) and can add up to
-   * more or less than that.
+   * Share of the query's wall-clock Run Time this slice was observably
+   * active for. Capped at 100% (a slice can't have been active longer
+   * than the query ran). Slices run concurrently, so several slices can
+   * legitimately sit near 100% at once — that's the point (all their
+   * gangs were alive for most of the query), not a bug.
+   *
+   * Deliberately NOT "share of the sum of all slices' activeMs":
+   * presence-based crediting means every visible slice accumulates ~Run
+   * Time each, so their sum ≈ N × Run Time and any "share of sum" would
+   * flatten every slice to ~1/N regardless of how long it really lived.
    */
   pct: number;
 }
 
-export function summarizeSlices(sliceIds: Map<PlanNode, number>, activeMs: Record<number, number>): SliceSummary[] {
+export function summarizeSlices(
+  sliceIds: Map<PlanNode, number>,
+  activeMs: Record<number, number>,
+  runTimeMs: number,
+): SliceSummary[] {
   const ids = [...new Set(sliceIds.values())].sort((a, b) => a - b);
-  const total = ids.reduce((sum, id) => sum + (activeMs[id] ?? 0), 0);
-  return ids.map(id => ({
-    id,
-    label: `Slice ${id}`,
-    activeMs: activeMs[id] ?? 0,
-    pct: total > 0 ? ((activeMs[id] ?? 0) / total) * 100 : 0,
-  }));
+  return ids.map(id => {
+    const ms = activeMs[id] ?? 0;
+    return {
+      id,
+      label: `Slice ${id}`,
+      activeMs: ms,
+      pct: runTimeMs > 0 ? Math.min(100, (ms / runTimeMs) * 100) : 0,
+    };
+  });
 }
 
 /** "Run Time"-style h/m/s formatting for a whole query — unlike formatMs's us/ms/s scale for one node's own time. */

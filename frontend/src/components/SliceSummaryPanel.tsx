@@ -18,8 +18,6 @@ interface SliceSummaryPanelProps {
 }
 
 export default function SliceSummaryPanel({ slices, runTimeMs, estProgressPct }: SliceSummaryPanelProps) {
-  const totalMs = slices.reduce((sum, s) => sum + s.activeMs, 0);
-
   return (
     <div className="w-36 shrink-0 space-y-3 text-xs pl-4 pt-4">
       <div>
@@ -33,6 +31,11 @@ export default function SliceSummaryPanel({ slices, runTimeMs, estProgressPct }:
 
       {slices.length > 0 && (
         <div className="pt-2 border-t border-zinc-800 space-y-2">
+          {/* Per-slice active time, framed as "share of Run Time" — slices
+              run concurrently so several near-100% at once is expected, not
+              a bug. No "Total" row: summing concurrent slice times just
+              gives N × Run Time, which was the source of the earlier "1m
+              Run Time but 7m Total" surprise. */}
           {slices.map(s => {
             const hex = sliceColor(s.id);
             return (
@@ -47,13 +50,6 @@ export default function SliceSummaryPanel({ slices, runTimeMs, estProgressPct }:
               </div>
             );
           })}
-          <div className="flex items-start gap-1.5 pt-1 border-t border-zinc-800/50">
-            <span className="w-2.5 h-2.5 rounded-sm border border-zinc-600 shrink-0 mt-0.5" />
-            <div className="min-w-0">
-              <div className="text-zinc-500">Total</div>
-              <div className="text-zinc-400 font-mono text-[11px]">{formatDuration(totalMs)} (100%)</div>
-            </div>
-          </div>
         </div>
       )}
     </div>
