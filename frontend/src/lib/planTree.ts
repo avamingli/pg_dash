@@ -677,9 +677,19 @@ export function sliceColor(sliceId: number | null | undefined): string | null {
 // shmem trace, which has nothing to show.
 export type NodeCompletionState = 'active' | 'completed' | 'idle';
 
+// Rank used to fold a prior state with the freshly-computed one via
+// max — completed outranks active outranks idle. Once a node has hit
+// a rank, subsequent polls never demote it: if its ancestor stopped
+// growing between polls we don't retract the "data flowed past me"
+// signal, if its rows plateau we don't retract "was active." The
+// underlying facts (bytes went through, gang ran) are monotonic; the
+// per-poll signals that let us observe them are noisy.
+const STATE_RANK: Record<NodeCompletionState, number> = { idle: 0, active: 1, completed: 2 };
+
 export function computeNodeCompletionStates(
   root: PlanNode | null,
   liveNodes: Record<number, LiveNodeStats> | undefined,
+  priorStates?: Record<number, NodeCompletionState>,
 ): Record<number, NodeCompletionState> {
   const result: Record<number, NodeCompletionState> = {};
   if (!root) return result;
@@ -709,13 +719,20 @@ export function computeNodeCompletionStates(
       if (walk(c, ancestorGrowing || growing)) subtreeGrew = true;
     }
     if (nid != null) {
-      result[nid] = growing
+      const fresh: NodeCompletionState = growing
         ? 'active'
         : subtreeGrew
           ? 'active'
           : ancestorGrowing
             ? 'completed'
             : 'idle';
+      const prior = priorStates?.[nid];
+      // Max-of-ranks: once a node reached a higher state at any past
+      // poll, it never drops. In particular, completed → idle (the
+      // "progress bar was full, now empty" regression) is impossible.
+      const priorRank = prior != null ? STATE_RANK[prior] : 0;
+      const freshRank = STATE_RANK[fresh];
+      result[nid] = priorRank > freshRank ? prior! : fresh;
     }
     return subtreeGrew || growing;
   }

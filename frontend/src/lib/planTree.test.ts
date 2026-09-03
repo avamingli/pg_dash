@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   advanceSliceTiming,
   computeCompletedSlices,
+  computeNodeCompletionStates,
   computeParentNidBySlice,
   EMPTY_SLICE_TIMING,
   summarizeSlices,
@@ -315,5 +316,81 @@ describe('computeCompletedSlices', () => {
     expect(done.has(3)).toBe(true);
     expect(done.has(4)).toBe(true);
     expect(done.has(5)).toBe(true);
+  });
+});
+
+describe('computeNodeCompletionStates monotonicity', () => {
+  // Two-node tree: parent (nid=10) → leaf (nid=20). Growing on parent
+  // means the leaf has state='completed' (data flowed past). Then next
+  // poll parent stops growing → without the sticky rule, leaf would
+  // regress to 'idle' (progress bar goes from full to empty).
+  function tree(): PlanNode {
+    const leaf: PlanNode = { 'Node Type': 'Seq Scan', Nid: 20, Plans: [] };
+    const parent: PlanNode = { 'Node Type': 'Hash Join', Nid: 10, Plans: [leaf] };
+    return parent;
+  }
+
+  it('never demotes a node — completed sticks even after ancestor stops growing', () => {
+    const root = tree();
+    // Poll 1: parent is growing → leaf 'completed' via ancestorGrowing.
+    const poll1 = computeNodeCompletionStates(root, {
+      10: { rows: 100, segments: 1, growing: true },
+    });
+    expect(poll1[20]).toBe('completed');
+
+    // Poll 2: parent plateaued (growing=false) → without sticky, leaf
+    // would drop back to 'idle'. With priorStates it stays 'completed'.
+    const poll2 = computeNodeCompletionStates(root, {
+      10: { rows: 100, segments: 1, growing: false },
+    }, poll1);
+    expect(poll2[20]).toBe('completed');
+    // Parent itself was 'active' at poll 1 (its own rows were growing).
+    // Sticky keeps it at 'active' even though this poll's fresh signal
+    // would be 'idle' (rows plateaued, no ancestor growing).
+    expect(poll2[10]).toBe('active');
+  });
+
+  it('never demotes a node — active sticks even after its own growth stops', () => {
+    const root = tree();
+    // Poll 1: leaf is growing → 'active'. Parent sees subtreeGrew → also 'active'.
+    const poll1 = computeNodeCompletionStates(root, {
+      20: { rows: 50, segments: 1, growing: true },
+    });
+    expect(poll1[20]).toBe('active');
+    expect(poll1[10]).toBe('active');
+
+    // Poll 2: leaf's rows plateaued, no ancestor growing either → without
+    // sticky, leaf would drop to 'idle'. Sticky keeps 'active'.
+    const poll2 = computeNodeCompletionStates(root, {
+      20: { rows: 50, segments: 1, growing: false },
+    }, poll1);
+    expect(poll2[20]).toBe('active');
+    expect(poll2[10]).toBe('active');
+  });
+
+  it('promotes freely: active → completed when the fresh signal outranks the prior', () => {
+    const root = tree();
+    const poll1 = computeNodeCompletionStates(root, {
+      20: { rows: 50, segments: 1, growing: true }, // leaf active
+    });
+    expect(poll1[20]).toBe('active');
+
+    // Poll 2: leaf stopped growing but parent is now growing → leaf's
+    // fresh state is 'completed' (ancestorGrowing). Higher rank than
+    // sticky 'active', so completed wins.
+    const poll2 = computeNodeCompletionStates(root, {
+      10: { rows: 500, segments: 1, growing: true },
+      20: { rows: 50, segments: 1, growing: false },
+    }, poll1);
+    expect(poll2[20]).toBe('completed');
+  });
+
+  it('works without priorStates (initial poll, no history to fold in)', () => {
+    const root = tree();
+    const s = computeNodeCompletionStates(root, {
+      20: { rows: 50, segments: 1, growing: true },
+    });
+    expect(s[20]).toBe('active');
+    expect(s[10]).toBe('active');
   });
 });

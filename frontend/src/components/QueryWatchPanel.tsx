@@ -4,7 +4,7 @@ import { api } from '@/lib/api';
 import PlanViewer, { type LiveNodeStats } from '@/components/PlanViewer';
 import { useMetrics } from '@/contexts/MetricsContext';
 import {
-  type PlanNode, type SliceTiming, EMPTY_SLICE_TIMING,
+  type PlanNode, type SliceTiming, type NodeCompletionState, EMPTY_SLICE_TIMING,
   buildRealPlanTree, computeSliceIds, sliceIdsByNid, advanceSliceTiming, summarizeSlices,
   estimateCompletionPct, computeNodeCompletionStates, computeCompletedSlices,
   computeParentNidBySlice,
@@ -354,10 +354,18 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
     () => (realPlan ? buildRealPlanTree(realPlan, segmentsCount) : null),
     [realPlan, segmentsCount],
   );
-  const nodeStates = useMemo(
-    () => computeNodeCompletionStates(root, liveNodes),
-    [root, liveNodes],
-  );
+  // Sticky rank per nid so the graph's per-node progress bar can't
+  // regress across polls. Kept in a ref (not state) because we mutate
+  // it during useMemo and we don't want that mutation to trigger a
+  // re-render — the useMemo's own result already carries the change.
+  // Reset would only make sense on unmount / new query, and the panel
+  // remounts for each of those, which reinitializes the ref.
+  const priorNodeStatesRef = useRef<Record<number, NodeCompletionState>>({});
+  const nodeStates = useMemo(() => {
+    const next = computeNodeCompletionStates(root, liveNodes, priorNodeStatesRef.current);
+    priorNodeStatesRef.current = next;
+    return next;
+  }, [root, liveNodes]);
   // The raw per-poll "which slices look completed *right now*" set. A
   // slice can flicker in/out of it as HJ 8 (the ancestor) briefly has
   // no new tuples between polls, so we don't feed this directly to the
