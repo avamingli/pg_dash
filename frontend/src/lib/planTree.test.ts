@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   advanceSliceTiming,
   computeCompletedSlices,
+  computeParentNidBySlice,
   EMPTY_SLICE_TIMING,
   summarizeSlices,
   type LiveNodeStats,
@@ -213,7 +214,8 @@ describe('computeCompletedSlices', () => {
       [motionB, 4], [hjMid, 4], [leafB, 4],
       [motionC, 5], [leafC, 5],
     ]);
-    return { root, sliceIds, states: spec };
+    const parentByNid = computeParentNidBySlice(root, sliceIds);
+    return { root, sliceIds, parentByNid, states: spec };
   }
 
   it('marks a slice done when any of its nodes is completed and none is active (rule A)', () => {
@@ -221,14 +223,14 @@ describe('computeCompletedSlices', () => {
     // Slice 3: leaf idle, only the deeper node of slice 4 is completed
     // — slice 3's own nodes are all idle and its parent (hj_top nid=10)
     // is idle too, so nothing to infer from → not done.
-    const { root, sliceIds, states } = buildTree({
+    const { sliceIds, parentByNid, states } = buildTree({
       30: 'completed', 31: 'idle', 32: 'completed',
       // slice 3: all idle, parent hj_top (nid 10) also idle → neither rule fires
       20: 'idle', 21: 'idle',
       // slice 5: all idle, parent hj_mid (nid 31) also idle → neither rule fires
       40: 'idle', 41: 'idle',
     });
-    const done = computeCompletedSlices(root, sliceIds, states);
+    const done = computeCompletedSlices(sliceIds, states, parentByNid);
     expect(done.has(4)).toBe(true);
     expect(done.has(3)).toBe(false);
     expect(done.has(5)).toBe(false);
@@ -237,15 +239,15 @@ describe('computeCompletedSlices', () => {
   it('does NOT mark a slice done while any of its nodes is state=active', () => {
     // Regression guard for the "slice 3 100% while its Motion is still
     // running" bug — Motion at top is active, leaf below is completed.
-    const { root, sliceIds, states } = buildTree({
+    const { sliceIds, parentByNid, states } = buildTree({
       20: 'active', 21: 'completed', // slice 3 mixed
     });
-    expect(computeCompletedSlices(root, sliceIds, states).has(3)).toBe(false);
+    expect(computeCompletedSlices(sliceIds, states, parentByNid).has(3)).toBe(false);
   });
 
   it('needs at least one completed node — an all-idle slice at query start is not done', () => {
-    const { root, sliceIds, states } = buildTree({});
-    expect(computeCompletedSlices(root, sliceIds, states).size).toBe(0);
+    const { sliceIds, parentByNid, states } = buildTree({});
+    expect(computeCompletedSlices(sliceIds, states, parentByNid).size).toBe(0);
   });
 
   it('rule B: an all-idle slice whose plan-tree parent node is completed is inferred done', () => {
@@ -254,11 +256,11 @@ describe('computeCompletedSlices', () => {
     // (hj_mid nid=31, in slice 4) reads 'completed' — hj_mid's own
     // ancestor is growing, so it has moved past its build phase, so
     // slice 5 (which fed it) is definitely done.
-    const { root, sliceIds, states } = buildTree({
+    const { sliceIds, parentByNid, states } = buildTree({
       31: 'completed',              // slice 4's HJ moved past
       40: 'idle', 41: 'idle',       // slice 5 never observed
     });
-    expect(computeCompletedSlices(root, sliceIds, states).has(5)).toBe(true);
+    expect(computeCompletedSlices(sliceIds, states, parentByNid).has(5)).toBe(true);
   });
 
   it('rule B does NOT fire while the parent node is merely active (still building)', () => {
@@ -266,37 +268,52 @@ describe('computeCompletedSlices', () => {
     // child is currently feeding it — could be a sibling of this slice,
     // not this slice. Only 'completed' proves the parent has advanced
     // past its build side.
-    const { root, sliceIds, states } = buildTree({
+    const { sliceIds, parentByNid, states } = buildTree({
       31: 'active',                 // slice 4's HJ still working
       40: 'idle', 41: 'idle',       // slice 5 never observed
     });
-    expect(computeCompletedSlices(root, sliceIds, states).has(5)).toBe(false);
+    expect(computeCompletedSlices(sliceIds, states, parentByNid).has(5)).toBe(false);
   });
 
   it('rule B does NOT fire if the slice has any active node of its own', () => {
     // Parent HJ is completed, but this slice is very much still feeding
     // (its Motion is currently growing) — must not call it done.
-    const { root, sliceIds, states } = buildTree({
+    const { sliceIds, parentByNid, states } = buildTree({
       31: 'completed',
       40: 'active', 41: 'idle',
     });
-    expect(computeCompletedSlices(root, sliceIds, states).has(5)).toBe(false);
+    expect(computeCompletedSlices(sliceIds, states, parentByNid).has(5)).toBe(false);
   });
 
   it('returns empty set when sliceIds is null', () => {
-    expect(computeCompletedSlices(null, null, {})).toEqual(new Set());
+    expect(computeCompletedSlices(null, {})).toEqual(new Set());
   });
 
-  it('rule B falls back off when root is not passed (no parent info to inspect)', () => {
+  it('rule B falls back off when parentNidBySlice is not passed', () => {
     const { sliceIds, states } = buildTree({ 31: 'completed', 40: 'idle', 41: 'idle' });
-    // Without root, only Rule A can fire, so slice 5 stays not-done.
-    expect(computeCompletedSlices(null, sliceIds, states).has(5)).toBe(false);
+    expect(computeCompletedSlices(sliceIds, states).has(5)).toBe(false);
   });
 
   it('skips nodes with no Nid (parsePlan path, EXPLAIN JSON)', () => {
     const root: PlanNode = { 'Node Type': 'Result', Plans: [] };
     const sliceIds = new Map<PlanNode, number>([[root, 1]]);
-    const done = computeCompletedSlices(root, sliceIds, { 999: 'completed' });
+    const done = computeCompletedSlices(sliceIds, { 999: 'completed' });
     expect(done.size).toBe(0);
+  });
+
+  it('unions with priorDone — once a slice is done, it stays done across polls', () => {
+    // Sticky monotonicity contract: even if the per-poll rules stop
+    // firing for a slice (measurement gap, spurious subtreeGrew flip),
+    // the returned set always includes priorDone.
+    const { sliceIds, parentByNid } = buildTree({
+      // All-idle now — none of the rules fire this poll:
+      100: 'idle', 10: 'idle', 20: 'idle', 21: 'idle',
+      30: 'idle', 31: 'idle', 32: 'idle', 40: 'idle', 41: 'idle',
+    });
+    const priorDone = new Set([3, 4, 5]);
+    const done = computeCompletedSlices(sliceIds, {}, parentByNid, priorDone);
+    expect(done.has(3)).toBe(true);
+    expect(done.has(4)).toBe(true);
+    expect(done.has(5)).toBe(true);
   });
 });

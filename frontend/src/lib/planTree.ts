@@ -462,6 +462,29 @@ export function summarizeSlices(
 }
 
 /**
+ * For each slice, the nid of its root Motion's *plan-tree parent* node
+ * (which lives in the parent slice). Computed once when the plan tree
+ * is first captured — the tree structure is fixed for the life of a
+ * query, so this doesn't need re-derivation per poll. Rule B in
+ * computeCompletedSlices needs to look up the parent-node state, and
+ * that lookup would fail if we tried to walk each poll's freshly
+ * rebuilt tree against a sliceIds Map keyed on the first poll's
+ * (now-stale) PlanNode references.
+ */
+export function computeParentNidBySlice(root: PlanNode, sliceIds: Map<PlanNode, number>): Map<number, number | undefined> {
+  const out = new Map<number, number | undefined>();
+  function visit(node: PlanNode, parentSlice: number | null, parentNid: number | undefined) {
+    const sid = sliceIds.get(node);
+    if (sid != null && sid !== parentSlice && !out.has(sid)) {
+      out.set(sid, parentNid);
+    }
+    for (const c of node.Plans ?? []) visit(c, sid ?? parentSlice, node.Nid);
+  }
+  visit(root, null, undefined);
+  return out;
+}
+
+/**
  * A slice is "known completed" (topology-inferred) when either:
  *
  *   (A) no node in the slice is currently `active` AND at least one
@@ -474,35 +497,33 @@ export function summarizeSlices(
  *       (very fast dim-table slices whose gangs tore down before the
  *       first poll caught them, leaving every node stuck at 'idle').
  *
- * Why per-slice aggregate, not root-only: a slice's root Motion is
- * what tears down last, and its own `state='completed'` signal fires
- * only in the narrow window when its parent slice happens to be
- * emitting rows *this exact poll*. Deeper nodes inside the slice pick
- * up 'completed' more readily (when their immediate parent within the
- * same slice starts producing), and rule (B) catches slices where
- * even that never fired.
+ * The result is always the union of rules-fired-this-poll with the
+ * caller-supplied `priorDone` set. Once a slice is done it stays done
+ * — rules are approximations of a monotonic underlying fact (the
+ * gang has torn down), so any signal that once said done wins over
+ * later signals that say otherwise (a spurious subtreeGrew flip, a
+ * missed poll, etc). The caller can rely on the returned Set never
+ * shrinking across polls, and this function itself is idempotent
+ * (returns a Set that includes everything in `priorDone`).
  *
- * The `no active in slice` guard blocks the "slice 3 still running but
- * sidebar says 100%" bug: if any node in the slice is currently
- * growing or has a growing subtree, the gang has not fully wound down.
+ * The `no active in slice` guard blocks the "slice 3 still running
+ * but sidebar says 100%" bug: if any node in the slice is currently
+ * growing or has a growing subtree, we don't ADD it to done (we still
+ * keep prior done-ness).
  *
- * The `parent completed` restriction (rather than "parent active or
- * completed") prevents an all-idle sibling from being falsely marked
- * done during the parent's build phase: parent's state='active' only
- * says *some* child is currently feeding it, not that *we* did. Only
- * once parent itself is 'completed' (its own ancestor is growing) are
- * we certain the parent has advanced past its build side and read
- * every child that was going to feed it.
+ * The `parent completed` restriction in Rule B (rather than "parent
+ * active or completed") prevents an all-idle sibling from being
+ * falsely marked done during the parent's build phase.
  */
 export function computeCompletedSlices(
-  root: PlanNode | null,
   sliceIds: Map<PlanNode, number> | null,
   nodeStates: Record<number, NodeCompletionState>,
+  parentNidBySlice?: Map<number, number | undefined>,
+  priorDone?: Set<number>,
 ): Set<number> {
-  const done = new Set<number>();
+  const done = new Set<number>(priorDone ?? []);
   if (!sliceIds) return done;
 
-  // Per-slice aggregate over its own nodes.
   const hasActive = new Set<number>();
   const hasCompleted = new Set<number>();
   for (const [node, sid] of sliceIds) {
@@ -513,28 +534,13 @@ export function computeCompletedSlices(
     else if (state === 'completed') hasCompleted.add(sid);
   }
 
-  // For rule (B), we need each slice root's *plan-tree parent* node
-  // (which lives in the parent slice). Walk the tree once: on entering
-  // a node whose slice differs from its parent's, that node is a
-  // slice root and its immediate parent nid is what rule (B) checks.
-  const parentNidBySlice = new Map<number, number | undefined>();
-  if (root) {
-    function visit(node: PlanNode, parentSlice: number | null, parentNid: number | undefined) {
-      const sid = sliceIds!.get(node);
-      if (sid != null && sid !== parentSlice && !parentNidBySlice.has(sid)) {
-        parentNidBySlice.set(sid, parentNid);
-      }
-      for (const c of node.Plans ?? []) visit(c, sid ?? parentSlice, node.Nid);
-    }
-    visit(root, null, undefined);
-  }
-
   const allSliceIds = new Set<number>();
   for (const sid of sliceIds.values()) allSliceIds.add(sid);
   for (const sid of allSliceIds) {
+    if (done.has(sid)) continue;
     if (hasActive.has(sid)) continue;
     if (hasCompleted.has(sid)) { done.add(sid); continue; }
-    const parentNid = parentNidBySlice.get(sid);
+    const parentNid = parentNidBySlice?.get(sid);
     if (parentNid != null && nodeStates[parentNid] === 'completed') done.add(sid);
   }
   return done;

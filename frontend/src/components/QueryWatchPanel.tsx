@@ -7,6 +7,7 @@ import {
   type PlanNode, type SliceTiming, EMPTY_SLICE_TIMING,
   buildRealPlanTree, computeSliceIds, sliceIdsByNid, advanceSliceTiming, summarizeSlices,
   estimateCompletionPct, computeNodeCompletionStates, computeCompletedSlices,
+  computeParentNidBySlice,
 } from '@/lib/planTree';
 import type { QueryProgress, QueryProgressNode, QueryProgressPlanNode } from '@/types/metrics';
 
@@ -231,6 +232,12 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
   // bookkeeping (matching a fresh poll's per-nid rows back to a slice) that
   // the render path never touches, so a ref is correct for it.
   const [sliceIds, setSliceIds] = useState<Map<PlanNode, number> | null>(null);
+  // Parent-node nid per slice — derived once from the FIRST poll's tree
+  // structure (queries don't reshape mid-run). Rule B in
+  // computeCompletedSlices reads it to check the plan-parent's state
+  // for slices whose own nodes never lit up. Kept in state alongside
+  // sliceIds so it stays keyed on the same first-poll tree instances.
+  const [parentNidBySlice, setParentNidBySlice] = useState<Map<number, number | undefined> | null>(null);
   const [rootMeta, setRootMeta] = useState<{ nid?: number; estRows?: number } | null>(null);
   const [sliceTiming, setSliceTiming] = useState<SliceTiming>(EMPTY_SLICE_TIMING);
   const [lastPollAt, setLastPollAt] = useState<number>(() => nowMs());
@@ -293,6 +300,7 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
               const ids = computeSliceIds(root);
               nidToSliceRef.current = sliceIdsByNid(root, ids);
               setSliceIds(ids);
+              setParentNidBySlice(computeParentNidBySlice(root, ids));
               setRootMeta({ nid: root.Nid, estRows: root['Plan Rows'] });
             }
           }
@@ -354,38 +362,44 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
   // slice can flicker in/out of it as HJ 8 (the ancestor) briefly has
   // no new tuples between polls, so we don't feed this directly to the
   // panel — everCompletedSlices accumulates monotonically below.
-  const currentlyCompleted = useMemo(
-    () => computeCompletedSlices(root, sliceIds, nodeStates),
-    [root, sliceIds, nodeStates],
-  );
+  // Monotonic set of every slice ever marked done — computed as
+  // `computeCompletedSlices(...)` unioned with the prior known-done
+  // set, so any signal that once said done wins over later signals
+  // that don't. The rules approximate a fact that IS monotonic (the
+  // gang has torn down); a poll where the signal disagrees is a
+  // measurement gap, not evidence the slice restarted. Keeping this
+  // in state is what carries "s5 was done at poll 5" forward to
+  // polls 6, 7, ... even when Rule A briefly stops firing.
   const [everCompletedSlices, setEverCompletedSlices] = useState<Set<number>>(() => new Set());
+  const currentlyCompleted = useMemo(
+    () => computeCompletedSlices(sliceIds, nodeStates, parentNidBySlice ?? undefined, everCompletedSlices),
+    [sliceIds, nodeStates, parentNidBySlice, everCompletedSlices],
+  );
   // Freeze a slice's activeMs at the moment it first became topology-
-  // completed — sticky crediting kept ticking it upward with wall clock,
-  // so a slice that actually finished sending at 5s of a 30s query kept
-  // showing "27s (100%)" as the wall clock advanced. The frozen value
-  // is what the sidebar displays instead, so a done slice reads "5s ✓"
-  // and stays there. First-seen wins; subsequent polls never overwrite.
+  // completed — the sticky slice-credit rule in advanceSliceTiming
+  // keeps ticking activeMs upward with wall clock, so a slice that
+  // finished sending at 5s of a 30s query kept showing "27s done" as
+  // the wall clock advanced. The frozen value is what the sidebar
+  // displays instead. First-seen wins; subsequent polls never
+  // overwrite.
   const [completedFrozenMs, setCompletedFrozenMs] = useState<Record<number, number>>({});
   useEffect(() => {
-    if (currentlyCompleted.size === 0) return;
-    setEverCompletedSlices(prev => {
-      let changed = false;
-      const next = new Set(prev);
-      for (const s of currentlyCompleted) if (!prev.has(s)) { next.add(s); changed = true; }
-      return changed ? next : prev;
-    });
-    setCompletedFrozenMs(prev => {
-      let changed = false;
-      const next = { ...prev };
-      for (const s of currentlyCompleted) {
-        if (!(s in next)) {
-          next[s] = sliceTiming.activeMs[s] ?? 0;
-          changed = true;
-        }
+    // currentlyCompleted is already union(everCompletedSlices, this-
+    // poll rules) so it's always ⊇ everCompletedSlices — only need
+    // to update state when size actually grew.
+    if (currentlyCompleted.size !== everCompletedSlices.size) {
+      setEverCompletedSlices(currentlyCompleted);
+    }
+    let frozenChanged = false;
+    const nextFrozen = { ...completedFrozenMs };
+    for (const s of currentlyCompleted) {
+      if (!(s in nextFrozen)) {
+        nextFrozen[s] = sliceTiming.activeMs[s] ?? 0;
+        frozenChanged = true;
       }
-      return changed ? next : prev;
-    });
-  }, [currentlyCompleted, sliceTiming.activeMs]);
+    }
+    if (frozenChanged) setCompletedFrozenMs(nextFrozen);
+  }, [currentlyCompleted, everCompletedSlices, completedFrozenMs, sliceTiming.activeMs]);
   const completedSlicesForSummary = useMemo(() => {
     // Query has ended → every slice necessarily ran. computeNodeCompletionStates
     // marks a node 'completed' only when an ancestor is currently growing;
@@ -394,8 +408,8 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
     // slices are done" so SliceSummaryPanel doesn't drop the ✓ badge
     // off half the rows the moment the query completes.
     if (finished && sliceIds) return new Set(sliceIds.values());
-    return everCompletedSlices;
-  }, [finished, sliceIds, everCompletedSlices]);
+    return currentlyCompleted;
+  }, [finished, sliceIds, currentlyCompleted]);
   // Substitute frozen activeMs for any completed slice — sidebar shows
   // "how long this slice was actively running" (frozen at completion),
   // not "how long ago it completed" (which ticks with wall clock and
