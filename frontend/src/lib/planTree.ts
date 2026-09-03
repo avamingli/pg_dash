@@ -462,38 +462,47 @@ export function summarizeSlices(
 }
 
 /**
- * A slice is "known completed" (topology-inferred) when its own nodes
- * agree: no node in the slice is currently `active`, AND at least one
- * node in the slice has state `completed`.
+ * A slice is "known completed" (topology-inferred) when either:
  *
- * Why per-slice max, not root-only: a slice's root Motion is what tears
- * down last, and its `state='completed'` signal (ancestor is growing)
- * fires only in the narrow window when the parent slice happens to be
- * emitting rows *this exact poll*. That window is easy to miss over an
- * 800ms poll interval — the parent may grow between polls, or by the
- * next poll the ancestor has plateaued and Motion falls back to `idle`.
- * A lower node inside the slice (a Seq Scan whose parent HJ inside the
- * same slice already grew) captures the "our subtree is done" fact
- * more reliably: it flips to 'completed' as soon as its immediate
- * parent starts producing, which happens far earlier in the slice's
- * lifetime than the root Motion getting an ancestor-growing signal.
+ *   (A) no node in the slice is currently `active` AND at least one
+ *       is `completed` — the slice's own nodes agree it wound down.
  *
- * The `no active` guard prevents the "slice 3 still running but sidebar
- * says 100%" bug: if any node in the slice is currently 'active'
- * (growing rows or subtreeGrew from below), the slice's gang has not
- * fully wound down yet, so we must not call it done even if some other
- * node in it has already completed.
+ *   (B) no node in the slice is currently `active` AND the plan-tree
+ *       parent of the slice's root Motion is itself `completed` —
+ *       the consumer above us has moved past receiving from us, so
+ *       we must be done, even if our slice's own nodes never lit up
+ *       (very fast dim-table slices whose gangs tore down before the
+ *       first poll caught them, leaving every node stuck at 'idle').
  *
- * The `at least one completed` requirement blocks a query-start false
- * positive: on the first poll everything is 'idle', which alone can't
- * be distinguished from a truly finished slice.
+ * Why per-slice aggregate, not root-only: a slice's root Motion is
+ * what tears down last, and its own `state='completed'` signal fires
+ * only in the narrow window when its parent slice happens to be
+ * emitting rows *this exact poll*. Deeper nodes inside the slice pick
+ * up 'completed' more readily (when their immediate parent within the
+ * same slice starts producing), and rule (B) catches slices where
+ * even that never fired.
+ *
+ * The `no active in slice` guard blocks the "slice 3 still running but
+ * sidebar says 100%" bug: if any node in the slice is currently
+ * growing or has a growing subtree, the gang has not fully wound down.
+ *
+ * The `parent completed` restriction (rather than "parent active or
+ * completed") prevents an all-idle sibling from being falsely marked
+ * done during the parent's build phase: parent's state='active' only
+ * says *some* child is currently feeding it, not that *we* did. Only
+ * once parent itself is 'completed' (its own ancestor is growing) are
+ * we certain the parent has advanced past its build side and read
+ * every child that was going to feed it.
  */
 export function computeCompletedSlices(
+  root: PlanNode | null,
   sliceIds: Map<PlanNode, number> | null,
   nodeStates: Record<number, NodeCompletionState>,
 ): Set<number> {
   const done = new Set<number>();
   if (!sliceIds) return done;
+
+  // Per-slice aggregate over its own nodes.
   const hasActive = new Set<number>();
   const hasCompleted = new Set<number>();
   for (const [node, sid] of sliceIds) {
@@ -503,8 +512,30 @@ export function computeCompletedSlices(
     if (state === 'active') hasActive.add(sid);
     else if (state === 'completed') hasCompleted.add(sid);
   }
-  for (const sid of hasCompleted) {
-    if (!hasActive.has(sid)) done.add(sid);
+
+  // For rule (B), we need each slice root's *plan-tree parent* node
+  // (which lives in the parent slice). Walk the tree once: on entering
+  // a node whose slice differs from its parent's, that node is a
+  // slice root and its immediate parent nid is what rule (B) checks.
+  const parentNidBySlice = new Map<number, number | undefined>();
+  if (root) {
+    function visit(node: PlanNode, parentSlice: number | null, parentNid: number | undefined) {
+      const sid = sliceIds!.get(node);
+      if (sid != null && sid !== parentSlice && !parentNidBySlice.has(sid)) {
+        parentNidBySlice.set(sid, parentNid);
+      }
+      for (const c of node.Plans ?? []) visit(c, sid ?? parentSlice, node.Nid);
+    }
+    visit(root, null, undefined);
+  }
+
+  const allSliceIds = new Set<number>();
+  for (const sid of sliceIds.values()) allSliceIds.add(sid);
+  for (const sid of allSliceIds) {
+    if (hasActive.has(sid)) continue;
+    if (hasCompleted.has(sid)) { done.add(sid); continue; }
+    const parentNid = parentNidBySlice.get(sid);
+    if (parentNid != null && nodeStates[parentNid] === 'completed') done.add(sid);
   }
   return done;
 }

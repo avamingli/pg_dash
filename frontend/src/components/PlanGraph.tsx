@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Table2, GitMerge, Sigma, Share2, ArrowUpDown, Box, ListPlus,
@@ -397,10 +397,13 @@ export default function PlanGraph({
     centerPan(scale);
   }, [width, height, centerPan]);
 
-  // Opening fullscreen changes how much room the viewport actually has, so
-  // re-fit once the DOM has the new (much larger) size instead of leaving
-  // whatever zoom the small sidebar view happened to be at.
-  useEffect(() => {
+  // Opening fullscreen changes how much room the viewport actually has,
+  // so re-fit once the DOM has the new (much larger) size. useLayout-
+  // Effect (not useEffect) so the fit lands *before* the browser paints
+  // the new container size — otherwise the first frame shows the tree
+  // at the old zoom/pan inside the new large viewport (an obvious
+  // "jump" as it snaps to the correct fit one frame later).
+  useLayoutEffect(() => {
     if (isFullscreen) fit();
   }, [isFullscreen, fit]);
 

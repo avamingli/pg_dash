@@ -188,87 +188,115 @@ describe('summarizeSlices', () => {
 });
 
 describe('computeCompletedSlices', () => {
-  // Build a small tree of (nid, sliceId, state) triples — each entry
-  // becomes one node with that state. Slices are then decided by the
-  // "any completed AND no active in the same slice" rule.
-  function build(entries: Array<{ nid: number; sliceId: number; state: NodeCompletionState }>) {
-    const sliceIds = new Map<PlanNode, number>();
-    const states: Record<number, NodeCompletionState> = {};
-    for (const { nid, sliceId, state } of entries) {
-      sliceIds.set({ 'Node Type': `n-${nid}`, Nid: nid, Plans: [] } as PlanNode, sliceId);
-      states[nid] = state;
-    }
-    return { sliceIds, states };
+  // Tree used across cases:
+  //     result   (sid=1, nid=100)
+  //       hj_top (sid=2, nid=10)
+  //         motionA (sid=3, nid=20)      ← root of slice 3
+  //           leafA (sid=3, nid=21)
+  //         motionB (sid=4, nid=30)      ← root of slice 4
+  //           hj_mid (sid=4, nid=31)
+  //             motionC (sid=5, nid=40)  ← root of slice 5
+  //               leafC (sid=5, nid=41)
+  //             leafB  (sid=4, nid=32)
+  function buildTree(spec: Record<number, NodeCompletionState>) {
+    const leafC: PlanNode = { 'Node Type': 'Seq Scan', Nid: 41, Plans: [] };
+    const motionC: PlanNode = { 'Node Type': 'Broadcast Motion', Nid: 40, Plans: [leafC] };
+    const leafB: PlanNode = { 'Node Type': 'Seq Scan', Nid: 32, Plans: [] };
+    const hjMid: PlanNode = { 'Node Type': 'Hash Join', Nid: 31, Plans: [motionC, leafB] };
+    const motionB: PlanNode = { 'Node Type': 'Redistribute Motion', Nid: 30, Plans: [hjMid] };
+    const leafA: PlanNode = { 'Node Type': 'Seq Scan', Nid: 21, Plans: [] };
+    const motionA: PlanNode = { 'Node Type': 'Broadcast Motion', Nid: 20, Plans: [leafA] };
+    const hjTop: PlanNode = { 'Node Type': 'Hash Join', Nid: 10, Plans: [motionA, motionB] };
+    const root: PlanNode = { 'Node Type': 'Result', Nid: 100, Plans: [hjTop] };
+    const sliceIds = new Map<PlanNode, number>([
+      [root, 1], [hjTop, 2], [motionA, 3], [leafA, 3],
+      [motionB, 4], [hjMid, 4], [leafB, 4],
+      [motionC, 5], [leafC, 5],
+    ]);
+    return { root, sliceIds, states: spec };
   }
 
-  it('marks a slice done when any of its nodes is completed and none is active', () => {
-    // Slice 4: all its nodes completed → done.
-    // Slice 5: no signal at all (all idle) → not done.
-    const { sliceIds, states } = build([
-      { nid: 20, sliceId: 4, state: 'completed' },
-      { nid: 21, sliceId: 4, state: 'completed' },
-      { nid: 30, sliceId: 5, state: 'idle' },
-    ]);
-    const done = computeCompletedSlices(sliceIds, states);
+  it('marks a slice done when any of its nodes is completed and none is active (rule A)', () => {
+    // Slice 4: mixed completed + idle in its own nodes → done via A.
+    // Slice 3: leaf idle, only the deeper node of slice 4 is completed
+    // — slice 3's own nodes are all idle and its parent (hj_top nid=10)
+    // is idle too, so nothing to infer from → not done.
+    const { root, sliceIds, states } = buildTree({
+      30: 'completed', 31: 'idle', 32: 'completed',
+      // slice 3: all idle, parent hj_top (nid 10) also idle → neither rule fires
+      20: 'idle', 21: 'idle',
+      // slice 5: all idle, parent hj_mid (nid 31) also idle → neither rule fires
+      40: 'idle', 41: 'idle',
+    });
+    const done = computeCompletedSlices(root, sliceIds, states);
     expect(done.has(4)).toBe(true);
+    expect(done.has(3)).toBe(false);
     expect(done.has(5)).toBe(false);
   });
 
   it('does NOT mark a slice done while any of its nodes is state=active', () => {
     // Regression guard for the "slice 3 100% while its Motion is still
-    // running" bug — leaf inside slice 3 is completed but Motion at the
-    // top is still active. The active node wins.
-    const { sliceIds, states } = build([
-      { nid: 10, sliceId: 3, state: 'active' },     // Motion (root)
-      { nid: 11, sliceId: 3, state: 'completed' },  // leaf below it
-    ]);
-    expect(computeCompletedSlices(sliceIds, states).size).toBe(0);
-  });
-
-  it('infers a fast/plateaued slice as done from a deeper completed leaf even when the root Motion is idle', () => {
-    // The "slice 6/7 never caught in shmem" case: Motion at root is
-    // 'idle' (its ancestor-growing signal was never observed in one
-    // poll window), but a leaf inside the slice picked up 'completed'
-    // when its own parent in the same slice was growing at an earlier
-    // poll. That's enough — no node is active, at least one is
-    // completed → slice done.
-    const { sliceIds, states } = build([
-      { nid: 60, sliceId: 6, state: 'idle' },       // Motion 6 (root of slice)
-      { nid: 61, sliceId: 6, state: 'completed' },  // leaf inside slice 6
-    ]);
-    expect(computeCompletedSlices(sliceIds, states).has(6)).toBe(true);
+    // running" bug — Motion at top is active, leaf below is completed.
+    const { root, sliceIds, states } = buildTree({
+      20: 'active', 21: 'completed', // slice 3 mixed
+    });
+    expect(computeCompletedSlices(root, sliceIds, states).has(3)).toBe(false);
   });
 
   it('needs at least one completed node — an all-idle slice at query start is not done', () => {
-    // Poll 1: nothing has moved anywhere. All-idle must never read as
-    // "everything already finished."
-    const { sliceIds, states } = build([
-      { nid: 10, sliceId: 3, state: 'idle' },
-      { nid: 20, sliceId: 4, state: 'idle' },
-    ]);
-    expect(computeCompletedSlices(sliceIds, states).size).toBe(0);
+    const { root, sliceIds, states } = buildTree({});
+    expect(computeCompletedSlices(root, sliceIds, states).size).toBe(0);
   });
 
-  it('scopes active/completed per slice — activity in slice A doesn\'t block slice B', () => {
-    // Slice 3 is still running (has an active node); slice 4 is done
-    // (all completed). They must be judged independently.
-    const { sliceIds, states } = build([
-      { nid: 10, sliceId: 3, state: 'active' },
-      { nid: 20, sliceId: 4, state: 'completed' },
-    ]);
-    const done = computeCompletedSlices(sliceIds, states);
-    expect(done.has(3)).toBe(false);
-    expect(done.has(4)).toBe(true);
+  it('rule B: an all-idle slice whose plan-tree parent node is completed is inferred done', () => {
+    // The "slice 5 stuck at 0%, no done" case. Slice 5's nodes never
+    // caught anything (all idle), but its root Motion's plan parent
+    // (hj_mid nid=31, in slice 4) reads 'completed' — hj_mid's own
+    // ancestor is growing, so it has moved past its build phase, so
+    // slice 5 (which fed it) is definitely done.
+    const { root, sliceIds, states } = buildTree({
+      31: 'completed',              // slice 4's HJ moved past
+      40: 'idle', 41: 'idle',       // slice 5 never observed
+    });
+    expect(computeCompletedSlices(root, sliceIds, states).has(5)).toBe(true);
+  });
+
+  it('rule B does NOT fire while the parent node is merely active (still building)', () => {
+    // The important guard: parent HJ being 'active' just says *some*
+    // child is currently feeding it — could be a sibling of this slice,
+    // not this slice. Only 'completed' proves the parent has advanced
+    // past its build side.
+    const { root, sliceIds, states } = buildTree({
+      31: 'active',                 // slice 4's HJ still working
+      40: 'idle', 41: 'idle',       // slice 5 never observed
+    });
+    expect(computeCompletedSlices(root, sliceIds, states).has(5)).toBe(false);
+  });
+
+  it('rule B does NOT fire if the slice has any active node of its own', () => {
+    // Parent HJ is completed, but this slice is very much still feeding
+    // (its Motion is currently growing) — must not call it done.
+    const { root, sliceIds, states } = buildTree({
+      31: 'completed',
+      40: 'active', 41: 'idle',
+    });
+    expect(computeCompletedSlices(root, sliceIds, states).has(5)).toBe(false);
   });
 
   it('returns empty set when sliceIds is null', () => {
-    expect(computeCompletedSlices(null, {})).toEqual(new Set());
+    expect(computeCompletedSlices(null, null, {})).toEqual(new Set());
+  });
+
+  it('rule B falls back off when root is not passed (no parent info to inspect)', () => {
+    const { sliceIds, states } = buildTree({ 31: 'completed', 40: 'idle', 41: 'idle' });
+    // Without root, only Rule A can fire, so slice 5 stays not-done.
+    expect(computeCompletedSlices(null, sliceIds, states).has(5)).toBe(false);
   });
 
   it('skips nodes with no Nid (parsePlan path, EXPLAIN JSON)', () => {
-    const sliceIds = new Map<PlanNode, number>();
-    sliceIds.set({ 'Node Type': 'x', Plans: [] } as PlanNode, 1);
-    const done = computeCompletedSlices(sliceIds, { 999: 'completed' });
+    const root: PlanNode = { 'Node Type': 'Result', Plans: [] };
+    const sliceIds = new Map<PlanNode, number>([[root, 1]]);
+    const done = computeCompletedSlices(root, sliceIds, { 999: 'completed' });
     expect(done.size).toBe(0);
   });
 });
