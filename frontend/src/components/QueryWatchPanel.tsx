@@ -278,6 +278,13 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
     [sliceIds, nodeStates],
   );
   const [everCompletedSlices, setEverCompletedSlices] = useState<Set<number>>(() => new Set());
+  // Freeze a slice's activeMs at the moment it first became topology-
+  // completed — sticky crediting kept ticking it upward with wall clock,
+  // so a slice that actually finished sending at 5s of a 30s query kept
+  // showing "27s (100%)" as the wall clock advanced. The frozen value
+  // is what the sidebar displays instead, so a done slice reads "5s ✓"
+  // and stays there. First-seen wins; subsequent polls never overwrite.
+  const [completedFrozenMs, setCompletedFrozenMs] = useState<Record<number, number>>({});
   useEffect(() => {
     if (currentlyCompleted.size === 0) return;
     setEverCompletedSlices(prev => {
@@ -286,7 +293,18 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
       for (const s of currentlyCompleted) if (!prev.has(s)) { next.add(s); changed = true; }
       return changed ? next : prev;
     });
-  }, [currentlyCompleted]);
+    setCompletedFrozenMs(prev => {
+      let changed = false;
+      const next = { ...prev };
+      for (const s of currentlyCompleted) {
+        if (!(s in next)) {
+          next[s] = sliceTiming.activeMs[s] ?? 0;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [currentlyCompleted, sliceTiming.activeMs]);
   const completedSlicesForSummary = useMemo(() => {
     // Query has ended → every slice necessarily ran. computeNodeCompletionStates
     // marks a node 'completed' only when an ancestor is currently growing;
@@ -297,8 +315,19 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
     if (finished && sliceIds) return new Set(sliceIds.values());
     return everCompletedSlices;
   }, [finished, sliceIds, everCompletedSlices]);
+  // Substitute frozen activeMs for any completed slice — sidebar shows
+  // "how long this slice was actively running" (frozen at completion),
+  // not "how long ago it completed" (which ticks with wall clock and
+  // confuses the reader).
+  const displayActiveMs = useMemo(() => {
+    const out = { ...sliceTiming.activeMs };
+    for (const [sidStr, ms] of Object.entries(completedFrozenMs)) {
+      out[Number(sidStr)] = ms;
+    }
+    return out;
+  }, [sliceTiming.activeMs, completedFrozenMs]);
   const sliceSummaries = sliceIds
-    ? summarizeSlices(sliceIds, sliceTiming.activeMs, runTimeMs, completedSlicesForSummary)
+    ? summarizeSlices(sliceIds, displayActiveMs, runTimeMs, completedSlicesForSummary)
     : [];
   const overallProgressPct = rootMeta?.nid != null
     ? estimateCompletionPct(liveNodes[rootMeta.nid], rootMeta.estRows, finished)

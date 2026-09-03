@@ -437,12 +437,26 @@ export function summarizeSlices(
   const ids = [...new Set(sliceIds.values())].sort((a, b) => a - b);
   return ids.map(id => {
     const ms = activeMs[id] ?? 0;
+    const rawPct = runTimeMs > 0 ? (ms / runTimeMs) * 100 : 0;
+    const isCompleted = completedSlices?.has(id) ?? false;
+    // Same rule the node detail panel already applies to per-node
+    // completion: a slice known-completed reads as at least 100%, never
+    // a misleading "98% but ✓ done". A slice that legitimately
+    // over-credited (sticky held it past its actual runtime) is allowed
+    // to surface a >100% value — that's real signal ("this slice was
+    // alive for longer than the total Run Time" — usually because
+    // sticky held onto a plateaued Motion's slot).
+    // Reserve exactly-100% for the done state. A still-running slice
+    // credited every poll would otherwise show "100%" while nothing is
+    // actually finished, colliding with the ✓ signal below. Cap running
+    // slices at 99 to keep the two states visually distinct.
+    const pct = isCompleted ? Math.max(100, rawPct) : Math.min(99, rawPct);
     return {
       id,
       label: `Slice ${id}`,
       activeMs: ms,
-      pct: runTimeMs > 0 ? Math.min(100, (ms / runTimeMs) * 100) : 0,
-      completed: completedSlices?.has(id) ?? false,
+      pct,
+      completed: isCompleted,
     };
   });
 }

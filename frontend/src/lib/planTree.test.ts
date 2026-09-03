@@ -119,18 +119,20 @@ describe('summarizeSlices', () => {
     return m;
   }
 
-  it('caps each slice at 100% of runTime, not of the sum of concurrent slice times', () => {
-    // Two slices, each active for the whole 60s wall clock. Sum of activeMs
-    // would be 120s, but each slice's share of Run Time is 100%. This is
-    // the "1m Run Time / 7m Total" regression from an earlier commit.
+  it('caps a running slice below 100% even when it was active the entire wall clock', () => {
+    // 100% is reserved for the ✓ done state — a running slice credited
+    // every poll can't hit it, otherwise the number and the (missing) ✓
+    // badge disagree. This is the "slice 3 still running but shows 100%"
+    // bug from the demo query.
     const ids = makeSliceIds([1, 2]);
     const out = summarizeSlices(ids, { 1: 60_000, 2: 60_000 }, 60_000);
     expect(out).toHaveLength(2);
-    expect(out[0].pct).toBe(100);
-    expect(out[1].pct).toBe(100);
+    expect(out[0].pct).toBe(99);
+    expect(out[1].pct).toBe(99);
+    expect(out[0].completed).toBe(false);
   });
 
-  it('gives each slice pct = activeMs / runTimeMs * 100', () => {
+  it('gives running slice pct = activeMs / runTimeMs * 100 (capped at 99)', () => {
     const ids = makeSliceIds([3, 4]);
     const out = summarizeSlices(ids, { 3: 90_000, 4: 12_000 }, 100_000);
     expect(out[0]).toMatchObject({ id: 3, activeMs: 90_000, pct: 90 });
@@ -151,6 +153,37 @@ describe('summarizeSlices', () => {
     expect(out.find(s => s.id === 1)?.completed).toBe(false);
     expect(out.find(s => s.id === 2)?.completed).toBe(true);
     expect(out.find(s => s.id === 3)?.completed).toBe(false);
+  });
+
+  it('floors a completed slice at 100% even if observed activity was less', () => {
+    // Regression: a slice whose gang tore down a poll or two before the
+    // query officially ended would lose its sticky credit for the final
+    // interval(s) and show "98% ✓ done" — the badge and the number
+    // disagreed. Same rule as the node detail panel: completed = ≥100%.
+    const ids = makeSliceIds([4]);
+    const out = summarizeSlices(ids, { 4: 26_400 }, 27_000, new Set([4]));
+    expect(out[0].pct).toBe(100);
+    expect(out[0].completed).toBe(true);
+  });
+
+  it('preserves >100% for completed slices that over-credited (sticky held on)', () => {
+    // If sticky rule kept crediting a slice past the query's own runtime
+    // (rare but possible when a Motion's slot lingered after the last
+    // poll), don't clamp — the overshoot is real signal about how long
+    // the slice's gang stayed alive vs the total wall clock.
+    const ids = makeSliceIds([5]);
+    const out = summarizeSlices(ids, { 5: 30_000 }, 25_000, new Set([5]));
+    expect(out[0].pct).toBe(120);
+  });
+
+  it('still clamps to 99% for non-completed slices even when activeMs exceeds runTime', () => {
+    // A slice not marked completed can never hit or exceed 100%: 100 is
+    // the visual signal for done, and a running slice must never usurp
+    // it — even if its accumulated activeMs momentarily overshoots
+    // runTimeMs (poll rounding, sticky rule holding on one tick too long).
+    const ids = makeSliceIds([6]);
+    const out = summarizeSlices(ids, { 6: 30_000 }, 25_000);
+    expect(out[0].pct).toBe(99);
   });
 });
 
