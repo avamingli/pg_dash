@@ -98,10 +98,20 @@ Simplest scrubber: keep the whole state history in an array (one entry per frame
 
 **Out of scope for Phase 2** (defer to later):
 
-- Sample gallery / built-in recordings hosted with the app
+- Sample *gallery UI* (a picker of built-in recordings on the /replay page). Note: sample recordings themselves already exist as fixtures — see "Test fixtures" below — Phase 2 just needs to consume them, not gallery-render them.
 - Sharing (upload to a server, share links)
 - Editing recordings (trim, annotate)
 - Comparing two recordings side-by-side
+
+## Test fixtures
+
+Canned `Recording` JSONs live in [`docs/samples/`](./samples/) with a paired `.mjs` generator each. See [`docs/samples/README.md`](./samples/README.md) for the table of what's available.
+
+Today: **`docs/samples/four-join.json`** — 15 frames, ~12.6 s, 7 slices, exercises Rule B (fast dim slices s4/s6 never observed) + Rule A (fact-scan slices s3/s5 finish mid-run) + coord-slice-never-completes-without-finished-signal. This is the primary fixture Phase 2 should build against — if the replay engine plays it back and the sidebar/graph match what the "sanity-check" script prints, the pipeline round-trip is proven.
+
+Load it in `ReplayPanel` with a plain `fetch('/samples/four-join.json')` during dev (put the samples dir behind a static route, or copy to `frontend/public/samples/`), or import directly in tests with `import fixture from '../../../docs/samples/four-join.json'`.
+
+Add a Vitest case that runs the fixture end-to-end and asserts on final slice-done membership + activeMs (see the sanity-check numbers in the samples README for expected values).
 
 ## Design decisions to make
 
@@ -183,15 +193,21 @@ For the UI side, the existing Vitest + React Testing Library setup is enough; te
 
 ## Related code — quick jumps
 
-- Recording types & UI: `frontend/src/components/QueryWatchPanel.tsx:14-27` and `~440-475`
-- Poll loop: `frontend/src/components/QueryWatchPanel.tsx:245-315`
-- `aggregateByNode` / `mergeLiveNodes`: `frontend/src/components/QueryWatchPanel.tsx:54-127`
-- `advanceSliceTiming` (per-slice active ms): `frontend/src/lib/planTree.ts:371-408`
-- `computeNodeCompletionStates` (per-node state, monotonic): `frontend/src/lib/planTree.ts:680-745`
-- `computeCompletedSlices` (per-slice done): `frontend/src/lib/planTree.ts:481-542`
-- `computeParentNidBySlice`: `frontend/src/lib/planTree.ts:462-478`
-- The sidebar rows: `frontend/src/components/SliceSummaryPanel.tsx`
-- The graph: `frontend/src/components/PlanGraph.tsx`
+Use `grep` (or your editor's symbol search) rather than line numbers — line numbers drift; symbol names are stable.
+
+- Recording types (`RecordedFrame`, `Recording`) — `frontend/src/components/QueryWatchPanel.tsx`, search `interface RecordedFrame`.
+- Recording UI (⏺ / ⏹ / 💾 buttons + `startRecording`/`stopRecording`/`downloadRecording`) — same file, search `startRecording =`.
+- Poll loop — same file, search `const poll = useCallback`.
+- `aggregateByNode` / `mergeLiveNodes` (per-poll aggregation) — same file, top-level functions.
+- `advanceSliceTiming` (per-slice active ms, sticky `seenActive`) — `frontend/src/lib/planTree.ts`, exported.
+- `computeNodeCompletionStates` (per-node state, monotonic max-rank fold with `priorStates`) — same file, exported. **Mutates the caller's `priorStates` state — see gotcha table.**
+- `computeCompletedSlices` (per-slice done, Rules A+B) — same file, exported.
+- `computeParentNidBySlice` (needed by Rule B) — same file, exported.
+- Sidebar rows — `frontend/src/components/SliceSummaryPanel.tsx`.
+- Graph — `frontend/src/components/PlanGraph.tsx`.
+- Type definitions consumed by the wire format — `frontend/src/types/metrics.ts`, search `interface QueryProgress` / `QueryProgressNode` / `QueryProgressPlanNode`.
+
+Tests for the pipeline pieces — `frontend/src/lib/planTree.test.ts`. Phase 2's new tests should live in `frontend/src/lib/replay.test.ts` next to them.
 
 ## Open questions to resolve during implementation
 
