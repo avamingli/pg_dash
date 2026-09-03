@@ -2,6 +2,15 @@
 
 Handoff doc for **Phase 2 (replay)** of the Watch-panel snapshot feature. Phase 1 (record + download) is shipped; this doc has everything a fresh session needs to build Phase 2 without spelunking the whole codebase.
 
+> **Status: Phase 2 shipped.** The five steps under "Suggested implementation order" are done — `PlanPlayer` (extracted view), `lib/replayEngine.ts` (`parseRecording` + `replayRecording`), `ReplayPanel` (play / pause / restart / 0.5-4x / scrub), and the `/replay` page with file-picker + drag-drop. Tests: `frontend/src/lib/replay.test.ts` (fixture end-to-end + round-trip), `ReplayPanel.test.tsx`, `pages/Replay.test.tsx`.
+>
+> Three things landed differently from the design below, each for a reason recorded at the code:
+> - `aggregateByNode` / `mergeLiveNodes` moved out of `QueryWatchPanel.tsx` into **`frontend/src/lib/planAggregate.ts`** — both drivers need them and a component file can't export non-components without breaking Fast Refresh. `planTree.ts` is untouched, as planned.
+> - Playback speed changes only the **wait between frames**, never `dtMs`: the engine folds slice timing from the frames' own `tsMs`, so the figures at frame N are identical at 1x and 4x. (The design suggested dividing `dtMs`, which would make 4x report different slice times than the run it recorded.)
+> - `finished` is never synthesized at the end of the frame list — only a frame with empty `nodes` *after* a frame with rows ends a replay. A recording stopped by hand genuinely doesn't know how its query ended, and claiming otherwise flips every slice to done via the finished→all-done fallback.
+>
+> Still deferred: the sample gallery, sharing, editing, side-by-side compare.
+
 ## Why this exists
 
 Live visual plan progression is only visible while a query is running against a real MPP cluster. That makes it awkward for demos, README GIFs, LinkedIn posts, and bug repros — the moment you want to show is gone by the time you can screenshot it.

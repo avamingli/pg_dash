@@ -18,6 +18,7 @@ import Cluster from '@/pages/Cluster';
 import Recommendations from '@/pages/Recommendations';
 import QueryHistory from '@/pages/QueryHistory';
 import Storage from '@/pages/Storage';
+import Replay from '@/pages/Replay';
 import './index.css';
 
 function AppLayout() {
@@ -43,6 +44,7 @@ function AppLayout() {
             <Route path="/history" element={<QueryHistory />} />
             <Route path="/alerts" element={<Alerts />} />
             <Route path="/storage" element={<Storage />} />
+            <Route path="/replay" element={<Replay />} />
           </Routes>
         </main>
         <StatusBar />

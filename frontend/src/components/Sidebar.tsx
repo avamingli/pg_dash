@@ -17,6 +17,7 @@ import {
   Stethoscope,
   History,
   HardDrive,
+  Film,
 } from 'lucide-react';
 import { useState, useMemo } from 'react';
 import { cn } from '@/lib/utils';
@@ -30,6 +31,7 @@ const baseNavItems = [
   { to: '/queries', icon: BarChart3, label: 'Query Analysis' },
   { to: '/history', icon: History, label: 'Query History' },
   { to: '/sql', icon: Terminal, label: 'SQL Editor' },
+  { to: '/replay', icon: Film, label: 'Plan Replay' },
   { to: '/replication', icon: GitBranch, label: 'Replication' },
   { to: '/locks', icon: Lock, label: 'Locks' },
   { to: '/vacuum', icon: Trash2, label: 'Vacuum' },
