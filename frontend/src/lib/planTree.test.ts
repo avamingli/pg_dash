@@ -188,37 +188,70 @@ describe('summarizeSlices', () => {
 });
 
 describe('computeCompletedSlices', () => {
-  // Build a sliceIds map where each slice has one node with a chosen state.
-  function build(entries: Array<{ nid: number; sliceId: number; state: NodeCompletionState }>) {
-    const sliceIds = new Map<PlanNode, number>();
-    const states: Record<number, NodeCompletionState> = {};
-    for (const { nid, sliceId, state } of entries) {
-      sliceIds.set({ 'Node Type': `n-${nid}`, Nid: nid, Plans: [] } as PlanNode, sliceId);
-      states[nid] = state;
-    }
-    return { sliceIds, states };
+  // Build a small plan-shaped tree with explicit slice ids per node, so
+  // we can exercise the "only the slice root's state decides" rule.
+  //
+  // Tree used in the mixed-state test:
+  //     root(sid=1, nid=100)                  ← slice 1 root = coord
+  //       └─ MotionA(sid=3, nid=10)           ← slice 3 root
+  //            ├─ leafA(sid=3, nid=11)          (inside slice 3)
+  //            └─ MotionB(sid=4, nid=20)      ← slice 4 root
+  //                 └─ leafB(sid=4, nid=21)     (inside slice 4)
+  function buildTree(spec: {
+    root: NodeCompletionState;
+    motionA: NodeCompletionState;
+    leafA: NodeCompletionState;
+    motionB: NodeCompletionState;
+    leafB: NodeCompletionState;
+  }) {
+    const leafA: PlanNode = { 'Node Type': 'Seq Scan', Nid: 11, Plans: [] };
+    const leafB: PlanNode = { 'Node Type': 'Seq Scan', Nid: 21, Plans: [] };
+    const motionB: PlanNode = { 'Node Type': 'Redistribute Motion', Nid: 20, Plans: [leafB] };
+    const motionA: PlanNode = { 'Node Type': 'Gather Motion', Nid: 10, Plans: [leafA, motionB] };
+    const root: PlanNode = { 'Node Type': 'Result', Nid: 100, Plans: [motionA] };
+    const sliceIds = new Map<PlanNode, number>([
+      [root, 1], [motionA, 3], [leafA, 3], [motionB, 4], [leafB, 4],
+    ]);
+    const states: Record<number, NodeCompletionState> = {
+      100: spec.root, 10: spec.motionA, 11: spec.leafA, 20: spec.motionB, 21: spec.leafB,
+    };
+    return { root, sliceIds, states };
   }
 
-  it('marks slice as completed when any node is state=completed', () => {
-    const { sliceIds, states } = build([
-      { nid: 10, sliceId: 3, state: 'active' },
-      { nid: 20, sliceId: 4, state: 'completed' },
-      { nid: 30, sliceId: 5, state: 'idle' },
-    ]);
-    const done = computeCompletedSlices(sliceIds, states);
-    expect(done.has(3)).toBe(false); // still running
-    expect(done.has(4)).toBe(true);  // topology says done
-    expect(done.has(5)).toBe(false); // no evidence either way
+  it('marks a slice done only when its root (Motion / plan root) is completed', () => {
+    // Slice 3 has a completed leaf but its Motion is still active — this
+    // is the "slice 3 nodes still running but shown 100%" bug. Slice 4
+    // has its Motion completed → done. Slice 1's root is idle → not done.
+    const { root, sliceIds, states } = buildTree({
+      root: 'idle', motionA: 'active', leafA: 'completed',
+      motionB: 'completed', leafB: 'completed',
+    });
+    const done = computeCompletedSlices(root, sliceIds, states);
+    expect(done.has(3)).toBe(false);
+    expect(done.has(4)).toBe(true);
+    expect(done.has(1)).toBe(false);
   });
 
-  it('returns empty set when sliceIds is null', () => {
-    expect(computeCompletedSlices(null, {})).toEqual(new Set());
+  it('ignores completed nodes deeper inside a slice whose root is not completed', () => {
+    // Regression guard for the exact "any node completed → slice done"
+    // bug: leafA is completed (its parent MotionA is holding rows), but
+    // MotionA — the slice root — is 'active', so slice 3 stays running.
+    const { root, sliceIds, states } = buildTree({
+      root: 'idle', motionA: 'active', leafA: 'completed',
+      motionB: 'active', leafB: 'active',
+    });
+    expect(computeCompletedSlices(root, sliceIds, states).size).toBe(0);
   });
 
-  it('skips slice nodes with no Nid (parsePlan path, EXPLAIN JSON)', () => {
-    const sliceIds = new Map<PlanNode, number>();
-    sliceIds.set({ 'Node Type': 'x', Plans: [] } as PlanNode, 1); // no Nid
-    const done = computeCompletedSlices(sliceIds, { 999: 'completed' });
+  it('returns empty set when root or sliceIds is null', () => {
+    expect(computeCompletedSlices(null, null, {})).toEqual(new Set());
+    expect(computeCompletedSlices(null, new Map(), {})).toEqual(new Set());
+  });
+
+  it('skips slice root nodes with no Nid (parsePlan path, EXPLAIN JSON)', () => {
+    const root: PlanNode = { 'Node Type': 'Result', Plans: [] };
+    const sliceIds = new Map<PlanNode, number>([[root, 1]]);
+    const done = computeCompletedSlices(root, sliceIds, { 999: 'completed' });
     expect(done.size).toBe(0);
   });
 });

@@ -462,22 +462,37 @@ export function summarizeSlices(
 }
 
 /**
- * A slice is "known completed" (topology-inferred) if any of its nodes has
- * state='completed' — meaning some ancestor in the plan tree is currently
- * holding rows, so this slice must have already fed data upstream. Slices
- * whose only signal is subtreeGrew-derived 'active' (hoarders consuming
- * from below) don't count as completed — they're still running.
+ * A slice is "known completed" (topology-inferred) when its *root* node
+ * has state='completed' — the root is the highest node inside the slice
+ * (a Motion, or the plan root for slice 1). "Root completed" means the
+ * slice's sender has already flushed all rows to its consumer upstream.
+ *
+ * The earlier "any node in the slice is completed" rule was wrong: a
+ * lower leaf inside slice N (e.g. an outer Seq Scan feeding a Hash Join
+ * that's still probing) can be 'completed' while the slice's root
+ * Motion is still 'active' sending rows out — marking the whole slice
+ * done in that case reads as "slice 3 100% ✓" while its Motion is still
+ * clearly running in the graph.
  */
 export function computeCompletedSlices(
+  root: PlanNode | null,
   sliceIds: Map<PlanNode, number> | null,
   nodeStates: Record<number, NodeCompletionState>,
 ): Set<number> {
   const done = new Set<number>();
-  if (!sliceIds) return done;
-  for (const [node, sliceId] of sliceIds) {
-    const nid = node.Nid;
-    if (nid != null && nodeStates[nid] === 'completed') done.add(sliceId);
+  if (!root || !sliceIds) return done;
+  // Walk the tree and pick out each slice's root — the highest node
+  // whose slice id differs from its parent's (or the plan root).
+  // Only these nodes' states decide slice completion.
+  function visit(node: PlanNode, parentSlice: number | null) {
+    const sid = sliceIds!.get(node);
+    if (sid != null && sid !== parentSlice) {
+      const nid = node.Nid;
+      if (nid != null && nodeStates[nid] === 'completed') done.add(sid);
+    }
+    for (const c of node.Plans ?? []) visit(c, sid ?? parentSlice);
   }
+  visit(root, null);
   return done;
 }
 

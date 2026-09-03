@@ -355,8 +355,8 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
   // no new tuples between polls, so we don't feed this directly to the
   // panel — everCompletedSlices accumulates monotonically below.
   const currentlyCompleted = useMemo(
-    () => computeCompletedSlices(sliceIds, nodeStates),
-    [sliceIds, nodeStates],
+    () => computeCompletedSlices(root, sliceIds, nodeStates),
+    [root, sliceIds, nodeStates],
   );
   const [everCompletedSlices, setEverCompletedSlices] = useState<Set<number>>(() => new Set());
   // Freeze a slice's activeMs at the moment it first became topology-
