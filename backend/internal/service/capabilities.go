@@ -28,26 +28,27 @@ type Capabilities struct {
 	TableInsertsSinceVacuum bool // pg_stat_user_tables.n_ins_since_vacuum (PG 13+)
 	VacuumProgressByteCols  bool // pg_stat_progress_vacuum's byte-based columns (PG 17+)
 
-	// QueryMetrics is true when gp_enable_query_metrics is on AND the
-	// operator has bootstrapped query_metrics.gp_instrument_shmem_detail
-	// (see handler/instrumentation.go for the exact one-time setup SQL).
-	// pg_dash never creates this itself — it's a GUC (PGC_POSTMASTER, needs
-	// a cluster restart) plus a C-backed function from the already-shipped
-	// gp_internal_tools contrib module, both operator actions.
+	// QueryMetrics is true when gp_enable_query_metrics is on AND
+	// whpg_plan_tree.instrument_detail exists — i.e. the whpg_plan_tree
+	// extension is installed in this database. The GUC is PGC_POSTMASTER
+	// (needs a cluster restart), so it's an operator action; the view
+	// comes for free with CREATE EXTENSION whpg_plan_tree (no separate
+	// bootstrap DDL any more).
 	QueryMetrics bool
 	// SessionMemoryStats is true when the gp_internal_tools extension is
 	// installed (session_state.session_level_memory_consumption view).
 	SessionMemoryStats bool
 
-	// RealPlanShmem is true when the connected server has the standalone
-	// whpg_plan_tree extension installed (CREATE EXTENSION whpg_plan_tree;
-	// zero core changes required — portable across WHPG7/GPDB7, Cloudberry,
-	// and WHPG19-next; see ~/work/whpg_plan_tree). When true, the watch
-	// endpoint can build the plan-node tree from plan_tree.plan_tree_detail
-	// (real plan_node_id, real parent/child, no re-EXPLAIN, no client-side
-	// node-numbering). When false, the live query plan tree feature is
-	// hidden entirely rather than falling back to an EXPLAIN-based
-	// reconstruction — see handler/instrumentation.go.
+	// RealPlanShmem is true when the connected server has the whpg_plan_tree
+	// extension installed (CREATE EXTENSION whpg_plan_tree; zero core
+	// changes required — portable across WHPG7/GPDB7, Cloudberry, and
+	// WHPG19-next; see ~/work/whpg_plan_tree). When true, the watch
+	// endpoint can build the plan-node tree from
+	// whpg_plan_tree.plan_detail (real plan_node_id, real parent/child,
+	// no re-EXPLAIN, no client-side node-numbering). When false, the
+	// live query plan tree feature is hidden entirely rather than
+	// falling back to an EXPLAIN-based reconstruction — see
+	// handler/instrumentation.go.
 	RealPlanShmem bool
 }
 
@@ -108,9 +109,9 @@ func detectCapabilities(ctx context.Context, pool *pgxpool.Pool) (*Capabilities,
 	err = pool.QueryRow(ctx, `
 		SELECT
 			COALESCE((SELECT setting = 'on' FROM pg_settings WHERE name = 'gp_enable_query_metrics'), false),
-			to_regclass('query_metrics.gp_instrument_shmem_detail') IS NOT NULL,
+			to_regclass('whpg_plan_tree.instrument_detail') IS NOT NULL,
 			to_regclass('session_state.session_level_memory_consumption') IS NOT NULL,
-			to_regclass('plan_tree.plan_tree_detail') IS NOT NULL
+			to_regclass('whpg_plan_tree.plan_detail') IS NOT NULL
 	`).Scan(&queryMetricsGUCOn, &instrumentViewExists, &memoryViewExists, &planShmemViewExists)
 	if err != nil {
 		return nil, fmt.Errorf("detectCapabilities: %w", err)

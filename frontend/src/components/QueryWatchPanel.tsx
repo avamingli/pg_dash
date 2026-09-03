@@ -68,7 +68,7 @@ function aggregateByNode(nodes: QueryProgressNode[]): Record<number, LiveNodeSta
   return result;
 }
 
-// gp_instrument_shmem_detail's row for a plan node vanishes the instant that
+// whpg_plan_tree.instrument_detail's row for a plan node vanishes the instant that
 // node's slot recycles — normal for a node that finishes well before the
 // whole query does (e.g. a Seq Scan feeding a Hash Join that's still
 // building its table). Blindly replacing liveNodes with whatever the latest
@@ -181,8 +181,8 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
     // that never had a tag (Activity Monitor's "watch that stranger").
     api.getQueryProgress(pid, tag ? { tag } : { sql })
       .then(progress => {
-        // The shmem slots this reads (gp_instrument_shmem_detail /
-        // plan_tree_detail) recycle the instant the query's backend
+        // The shmem slots this reads (whpg_plan_tree.instrument_detail /
+        // whpg_plan_tree.plan_detail) recycle the instant the query's backend
         // resource owner releases — i.e. right as it finishes — so the
         // very next poll after completion comes back empty, not 404. Treat
         // that the same as the 404 case below: stop polling and freeze on

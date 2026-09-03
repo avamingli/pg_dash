@@ -373,7 +373,7 @@ export interface QueryProgressMemory {
 }
 
 // One row per (segment, plan node) from the whpg_plan_tree extension's
-// CapturePlanTree (plan_tree.plan_tree_detail) — the real plan tree, keyed
+// CapturePlanTree (whpg_plan_tree.plan_detail) — the real plan tree, keyed
 // by the true plan_node_id. Only present when the connected server has the
 // extension installed (Capabilities.RealPlanShmem); the live query plan
 // tree feature is hidden entirely, not degraded to an EXPLAIN-based guess,

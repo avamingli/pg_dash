@@ -111,7 +111,7 @@ export function assignNodeIds(root: PlanNode, isORCA: boolean): Map<PlanNode, nu
 
 /**
  * Builds a PlanNode tree straight from the whpg_plan_tree extension's
- * capture (plan_tree.plan_tree_detail, one row per segment per node) —
+ * capture (whpg_plan_tree.plan_detail, one row per segment per node) —
  * the actual plan_node_id/parent/label the kernel captured when the query
  * started, not a guess reconstructed from a fresh EXPLAIN. Field names on
  * the resulting PlanNode deliberately match what parsePlan produces from
@@ -508,7 +508,7 @@ export function sliceColor(sliceId: number | null | undefined): string | null {
 }
 
 // Per-node completion inferred from the plan tree's own topology plus
-// whatever gp_instrument_shmem_detail currently shows.
+// whatever whpg_plan_tree.instrument_detail currently shows.
 //
 // Why this exists: the plugin's slots are held open as long as some
 // downstream consumer needs them, so plenty of nodes stop producing

@@ -29,27 +29,21 @@ func queryProgressHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager
 		sql := r.URL.Query().Get("sql")
 
 		// The live query plan tree needs both capabilities: QueryMetrics for
-		// the live per-node row counts (gp_instrument_shmem_detail) and
-		// RealPlanShmem for the real tree structure itself
-		// (plan_tree_detail). Deliberately refusing the whole endpoint
-		// rather than degrading to an EXPLAIN-based reconstruction when only
-		// one is present — a guessed tree isn't the query that's actually
-		// running, so the feature is either fully available or hidden.
+		// the live per-node row counts (whpg_plan_tree.instrument_detail)
+		// and RealPlanShmem for the real tree structure itself
+		// (whpg_plan_tree.plan_detail). Deliberately refusing the whole
+		// endpoint rather than degrading to an EXPLAIN-based reconstruction
+		// when only one is present — a guessed tree isn't the query that's
+		// actually running, so the feature is either fully available or
+		// hidden. Both views ship together in the whpg_plan_tree extension
+		// now, so a single CREATE EXTENSION step turns everything on.
 		caps := connMgr.GetCapabilities()
-		if !caps.QueryMetrics {
+		if !caps.QueryMetrics || !caps.RealPlanShmem {
 			writeError(w, http.StatusServiceUnavailable,
-				"gp_enable_query_metrics is not enabled or query_metrics.gp_instrument_shmem_detail "+
-					"hasn't been set up. One-time setup:\n"+
-					"1. gpconfig -c gp_enable_query_metrics -v on && gpstop -raf\n"+
-					"2. Run this SQL once:\n"+query.InstrumentationSetupDDL)
-			return
-		}
-		if !caps.RealPlanShmem {
-			writeError(w, http.StatusServiceUnavailable,
-				"the whpg_plan_tree extension is not installed. One-time setup:\n"+
-					"1. gpconfig -c shared_preload_libraries -v whpg_plan_tree --skipvalidation && gpstop -raf\n"+
-					"   (append to any existing shared_preload_libraries value instead, if one is set)\n"+
-					"2. CREATE EXTENSION whpg_plan_tree;")
+				"live plan tree unavailable — verify: "+
+					"(1) shared_preload_libraries contains whpg_plan_tree, "+
+					"(2) gp_enable_query_metrics = on (both need gpstop -raf), "+
+					"(3) CREATE EXTENSION whpg_plan_tree has run in this database.")
 			return
 		}
 
