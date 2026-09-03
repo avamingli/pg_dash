@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState, useCallback, useRef, type PointerEvent } from 'react';
-import { X, RefreshCw, AlertTriangle, Circle, Square, Download } from 'lucide-react';
+import { X, RefreshCw, Circle, Square, Download } from 'lucide-react';
 import { api } from '@/lib/api';
-import PlanViewer, { type LiveNodeStats } from '@/components/PlanViewer';
+import { type LiveNodeStats } from '@/components/PlanViewer';
+import PlanPlayer from '@/components/PlanPlayer';
 import { useMetrics } from '@/contexts/MetricsContext';
 import {
   type PlanNode, type SliceTiming, type NodeCompletionState, EMPTY_SLICE_TIMING,
-  buildRealPlanTree, computeSliceIds, sliceIdsByNid, advanceSliceTiming, summarizeSlices,
-  estimateCompletionPct, computeNodeCompletionStates, computeCompletedSlices,
+  buildRealPlanTree, computeSliceIds, sliceIdsByNid, advanceSliceTiming,
+  computeNodeCompletionStates, computeCompletedSlices,
   computeParentNidBySlice,
 } from '@/lib/planTree';
 import type { QueryProgress, QueryProgressNode, QueryProgressPlanNode } from '@/types/metrics';
@@ -140,7 +141,6 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
   const [memoryMb, setMemoryMb] = useState<number | null>(null);
   const [finished, setFinished] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const hasRealPlan = !!realPlan && realPlan.length > 0;
 
   // Snapshot recording: every /progress response gets appended to a ref
   // while `recording` is on. Stopping (manually or auto on query end)
@@ -398,34 +398,6 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
     }
     if (frozenChanged) setCompletedFrozenMs(nextFrozen);
   }, [currentlyCompleted, completedFrozenMs, sliceTiming.activeMs]);
-  const completedSlicesForSummary = useMemo(() => {
-    // Query has ended → every slice necessarily ran. computeNodeCompletionStates
-    // marks a node 'completed' only when an ancestor is currently growing;
-    // a query that just ended has no growing anywhere, so an empty
-    // completed set is expected right at the finish. Fall back to "all
-    // slices are done" so SliceSummaryPanel doesn't drop the ✓ badge
-    // off half the rows the moment the query completes.
-    if (finished && sliceIds) return new Set(sliceIds.values());
-    return currentlyCompleted;
-  }, [finished, sliceIds, currentlyCompleted]);
-  // Substitute frozen activeMs for any completed slice — sidebar shows
-  // "how long this slice was actively running" (frozen at completion),
-  // not "how long ago it completed" (which ticks with wall clock and
-  // confuses the reader).
-  const displayActiveMs = useMemo(() => {
-    const out = { ...sliceTiming.activeMs };
-    for (const [sidStr, ms] of Object.entries(completedFrozenMs)) {
-      out[Number(sidStr)] = ms;
-    }
-    return out;
-  }, [sliceTiming.activeMs, completedFrozenMs]);
-  const sliceSummaries = sliceIds
-    ? summarizeSlices(sliceIds, displayActiveMs, runTimeMs, completedSlicesForSummary)
-    : [];
-  const overallProgressPct = rootMeta?.nid != null
-    ? estimateCompletionPct(liveNodes[rootMeta.nid], rootMeta.estRows, finished)
-    : null;
-
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
@@ -495,34 +467,15 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
           </div>
         </div>
 
-        <div className="px-4 py-2 border-b border-zinc-800 flex items-center gap-4 text-xs">
-          {memoryMb != null && (
-            <span className="text-zinc-400">Memory: <span className="text-zinc-200 font-mono">{memoryMb} MB</span></span>
-          )}
-          {finished && (
-            <span className="flex items-center gap-1.5 text-zinc-400">
-              <AlertTriangle size={12} className="text-yellow-400" /> Finished — showing the last snapshot before it ended
-            </span>
-          )}
-        </div>
-
-        <div className="flex-1 overflow-y-auto">
-          {hasRealPlan ? (
-            <PlanViewer
-              liveNodes={liveNodes} realPlan={realPlan} finished={finished}
-              segments={segmentsCount}
-              sliceSummaries={sliceSummaries} runTimeMs={runTimeMs} estProgressPct={overallProgressPct}
-            />
-          ) : finished ? (
-            <p className="text-sm text-zinc-500 p-4">Query ended before its plan tree was captured — nothing to show.</p>
-          ) : (
-            <p className="text-sm text-zinc-500 p-4">Loading plan...</p>
-          )}
-        </div>
-
-        <div className="px-4 py-2 border-t border-zinc-800 text-[11px] text-zinc-500">
-          Rows shown are live per-node counts from gp_instrument_shmem — an approximation, not a guarantee (nodes can burst rather than stream steadily).
-        </div>
+        {/* The view itself is shared with the replay driver — same props,
+            same pipeline output, so a recording plays back pixel-identical
+            to the live run it was captured from. See PlanPlayerState. */}
+        <PlanPlayer
+          realPlan={realPlan} liveNodes={liveNodes} segments={segmentsCount}
+          sliceIds={sliceIds} sliceTiming={sliceTiming}
+          currentlyCompleted={currentlyCompleted} completedFrozenMs={completedFrozenMs}
+          rootMeta={rootMeta} memoryMb={memoryMb} finished={finished} runTimeMs={runTimeMs}
+        />
       </div>
     </div>
   );
