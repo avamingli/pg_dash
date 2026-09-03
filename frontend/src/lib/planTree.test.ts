@@ -256,23 +256,36 @@ describe('computeCompletedSlices', () => {
   });
 
   it('infers a fast unobserved slice as done when its parent slice was observed', () => {
-    // "Executed so fast we never saw rows > 0" case: slice 4's Motion is
-    // 'idle' (never in shmem), but seenActive says its parent slice 3
-    // was caught producing — parent can't process anything without our
-    // input, so we must have finished before the first poll. Same in
-    // reverse for slice 3: not caught, but parent slice 1 was → done.
+    // "Executed so fast we never saw rows > 0" case: slice 3's Motion
+    // is 'idle' (never in shmem), but seenActive says its parent slice
+    // 1 was caught producing → done. Slice 4's parent is slice 3, but
+    // slice 3 wasn't in seenActive — walk up to slice 1 (its ancestor
+    // via 3→1) → also done.
     const { root, sliceIds, states } = buildTree({
       root: 'active', motionA: 'idle', leafA: 'idle',
       motionB: 'idle', leafB: 'idle',
     });
-    const seenActive = new Set<number>([1]);
-    const done = computeCompletedSlices(root, sliceIds, states, seenActive);
-    expect(done.has(3)).toBe(true); // parent slice 1 seen → child slice 3 must be done
-    // slice 4 needs its parent slice 3 to be in seenActive; only slice 1 is.
-    expect(done.has(4)).toBe(false);
+    const done = computeCompletedSlices(root, sliceIds, states, new Set([1]));
+    expect(done.has(3)).toBe(true);
+    expect(done.has(4)).toBe(true); // ancestor chain 4 → 3 → 1 has 1 in seenActive
   });
 
-  it('does NOT infer a slice done when neither it nor its parent has been observed', () => {
+  it('infers a slice done when it plateaued after being observed, as long as an ancestor slice ran', () => {
+    // The "slice 7 stuck at 90+%" case: Motion 7 was observed producing
+    // (in seenActive), then plateaued — its state is now 'idle', but
+    // the sticky activeMs kept climbing. As long as an ancestor slice
+    // was seen, plateau + observed-ancestor is enough to call it done.
+    const { root, sliceIds, states } = buildTree({
+      root: 'idle', motionA: 'idle', leafA: 'idle',
+      motionB: 'idle', leafB: 'idle',
+    });
+    // Slice 4 itself IS in seenActive (previously produced), and its
+    // ancestor slice 1 was also observed → mark done.
+    const done = computeCompletedSlices(root, sliceIds, states, new Set([1, 4]));
+    expect(done.has(4)).toBe(true);
+  });
+
+  it('does NOT infer a slice done when neither it nor any ancestor has been observed', () => {
     // Query hasn't really started emitting anywhere — no evidence
     // either way. Must not falsely mark anything done.
     const { root, sliceIds, states } = buildTree({
@@ -283,9 +296,10 @@ describe('computeCompletedSlices', () => {
     expect(done.size).toBe(0);
   });
 
-  it('does NOT infer a slice done when the slice itself was observed active', () => {
-    // Slice 3 IS in seenActive — it's currently running, not done. Rule 2
-    // only fires for "never observed" slices.
+  it('does NOT infer a slice done when its root Motion is currently state=active', () => {
+    // Slice 3's Motion is 'active' — currently producing rows or has a
+    // growing subtree feeding it. Even if an ancestor also ran, this
+    // slice is still working, not done.
     const { root, sliceIds, states } = buildTree({
       root: 'idle', motionA: 'active', leafA: 'idle',
       motionB: 'idle', leafB: 'idle',
@@ -294,9 +308,9 @@ describe('computeCompletedSlices', () => {
     expect(done.has(3)).toBe(false);
   });
 
-  it('parent-slice inference falls back off when seenActive is not passed', () => {
-    // Callers that don't have SliceTiming yet (initial render before the
-    // first poll completes) get the strict rule-1-only behaviour.
+  it('parent-chain inference falls back off when seenActive is not passed', () => {
+    // Callers that don't have SliceTiming yet (initial render before
+    // the first poll completes) get the strict rule-1-only behaviour.
     const { root, sliceIds, states } = buildTree({
       root: 'active', motionA: 'idle', leafA: 'idle',
       motionB: 'idle', leafB: 'idle',

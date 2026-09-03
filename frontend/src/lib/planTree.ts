@@ -506,19 +506,37 @@ export function computeCompletedSlices(
   visit(root, null);
 
   for (const [sid, { nid, parentSlice }] of roots) {
-    // Rule 1: root state is 'completed'.
+    // Rule 1: root state is 'completed' — an ancestor is currently
+    // growing, so we've definitely flushed upstream.
     if (nid != null && nodeStates[nid] === 'completed') {
       done.add(sid);
       continue;
     }
-    // Rule 2: never observed here, but parent slice was observed.
-    if (
-      seenActive &&
-      parentSlice != null &&
-      !seenActive.has(sid) &&
-      seenActive.has(parentSlice)
-    ) {
-      done.add(sid);
+    // Rule 2: our root Motion is NOT currently active (its state is
+    // 'idle', or absent), and *some* ancestor slice has been observed
+    // producing at any past poll. Walk the parent-slice chain — the
+    // immediate parent isn't enough, since a chain of small
+    // Motion-only slices (Broadcast above Redistribute above a fast
+    // Seq Scan) can all be never-observed themselves while a slice
+    // further up did move.
+    //
+    // Covers two failure modes of Rule 1:
+    //   (a) slice too fast to observe at all — state='idle' from the
+    //       start, never in seenActive
+    //   (b) slice was observed producing, then plateaued (Motion's
+    //       shmem slot lingers with the last rows count) — state
+    //       flips back to 'idle', ancestor-growing was never caught
+    //       in a single poll window
+    // Both cases: MPP guarantees a parent slice can't have received
+    // any rows without a child slice feeding it, so an observed
+    // ancestor proves this slice has already done its work.
+    const state = nid != null ? nodeStates[nid] : undefined;
+    if (seenActive && state !== 'active') {
+      let p = parentSlice;
+      while (p != null) {
+        if (seenActive.has(p)) { done.add(sid); break; }
+        p = roots.get(p)?.parentSlice ?? null;
+      }
     }
   }
   return done;
