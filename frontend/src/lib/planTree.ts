@@ -462,37 +462,65 @@ export function summarizeSlices(
 }
 
 /**
- * A slice is "known completed" (topology-inferred) when its *root* node
- * has state='completed' — the root is the highest node inside the slice
- * (a Motion, or the plan root for slice 1). "Root completed" means the
- * slice's sender has already flushed all rows to its consumer upstream.
+ * Which slices are "known completed" by topology inference. Two rules,
+ * each targeting a different failure mode of the raw shmem signal:
  *
- * The earlier "any node in the slice is completed" rule was wrong: a
- * lower leaf inside slice N (e.g. an outer Seq Scan feeding a Hash Join
- * that's still probing) can be 'completed' while the slice's root
- * Motion is still 'active' sending rows out — marking the whole slice
- * done in that case reads as "slice 3 100% ✓" while its Motion is still
- * clearly running in the graph.
+ * Rule 1 (root completed): a slice's *root* node is in state='completed'
+ * — root = highest node inside the slice (a Motion, or the plan root
+ * for slice 1). "Root completed" means data has already flowed past
+ * this slice's sender to its consumer upstream. Ignoring lower leaves
+ * matters: a Seq Scan inside slice N that fed a still-probing Hash Join
+ * one level up reads 'completed' while slice N's root Motion is still
+ * actively sending — treating that as done paints "slice N 100% ✓"
+ * while its Motion is visibly still going.
+ *
+ * Rule 2 (parent-slice moved): a slice was never observed producing
+ * rows (missing from `seenActive`) but its *parent slice* has been
+ * observed producing. In MPP a parent slice can't process anything
+ * without input from its child slices, so if we've caught the parent
+ * running and never caught this child in shmem, the child finished
+ * faster than the 800ms poll interval could see. Small dim-table
+ * slices are the classic case — they Seq Scan → Redistribute → EOS in
+ * under a poll, leave no observable rows, but their consumer's Hash
+ * Join is clearly hashing.
  */
 export function computeCompletedSlices(
   root: PlanNode | null,
   sliceIds: Map<PlanNode, number> | null,
   nodeStates: Record<number, NodeCompletionState>,
+  seenActive?: Set<number>,
 ): Set<number> {
   const done = new Set<number>();
   if (!root || !sliceIds) return done;
-  // Walk the tree and pick out each slice's root — the highest node
-  // whose slice id differs from its parent's (or the plan root).
-  // Only these nodes' states decide slice completion.
+  // Walk once to collect each slice's root node + parent slice id.
+  // A slice root is any node whose slice id differs from its parent's
+  // (the plan root's parent slice is null, so it always qualifies).
+  const roots = new Map<number, { nid: number | undefined; parentSlice: number | null }>();
   function visit(node: PlanNode, parentSlice: number | null) {
     const sid = sliceIds!.get(node);
-    if (sid != null && sid !== parentSlice) {
-      const nid = node.Nid;
-      if (nid != null && nodeStates[nid] === 'completed') done.add(sid);
+    if (sid != null && sid !== parentSlice && !roots.has(sid)) {
+      roots.set(sid, { nid: node.Nid, parentSlice });
     }
     for (const c of node.Plans ?? []) visit(c, sid ?? parentSlice);
   }
   visit(root, null);
+
+  for (const [sid, { nid, parentSlice }] of roots) {
+    // Rule 1: root state is 'completed'.
+    if (nid != null && nodeStates[nid] === 'completed') {
+      done.add(sid);
+      continue;
+    }
+    // Rule 2: never observed here, but parent slice was observed.
+    if (
+      seenActive &&
+      parentSlice != null &&
+      !seenActive.has(sid) &&
+      seenActive.has(parentSlice)
+    ) {
+      done.add(sid);
+    }
+  }
   return done;
 }
 
