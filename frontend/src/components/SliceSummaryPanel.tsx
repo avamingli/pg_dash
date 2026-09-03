@@ -63,12 +63,21 @@ export default function SliceSummaryPanel({ slices, runTimeMs, estProgressPct, h
                     {s.completed && <span className="text-emerald-400 text-[10px]" title="Plan-tree inference: this slice's data has already reached its consumer upstream, so its gang has completed">✓</span>}
                   </div>
                   <div className="text-zinc-300 font-mono text-[11px]">
-                    {s.activeMs === 0 && s.completed
-                      // The 800ms poll window missed this slice's brief
-                      // production phase entirely, but topology confirms
-                      // it ran — showing "0s (0%)" would read as "hasn't
-                      // started", which is wrong.
-                      ? <span className="text-emerald-400">done</span>
+                    {/* Two visual shapes: running vs done.
+                        Running → "Xs (Y%)" — Y is the honest running
+                        share of Run Time, always <100.
+                        Done → time + "done" (green), no pct: the ✓ on
+                        the label above already says "done" and pct is
+                        floored to 100 for completed slices, so "100%"
+                        is pure redundancy. If time rounds to 0s (either
+                        we never caught a full second of credit, or the
+                        gang tore down before the first poll saw it),
+                        collapse to just "done" — "0s done" reads as
+                        if it broke. */}
+                    {s.completed
+                      ? s.activeMs < 1000
+                        ? <span className="text-emerald-400">done</span>
+                        : <><span>{formatDuration(s.activeMs)}</span> <span className="text-emerald-400">done</span></>
                       : `${formatDuration(s.activeMs)} (${s.pct.toFixed(0)}%)`}
                   </div>
                 </div>
