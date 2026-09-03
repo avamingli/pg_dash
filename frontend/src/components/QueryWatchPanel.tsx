@@ -15,6 +15,8 @@ interface QueryWatchPanelProps {
   sql: string;
   /** pg_stat_activity.query_start for this pid, if the caller already has it (Activity Monitor's row, SQL Editor's pid-discovery match) — used as "Run Time"'s start; falls back to when this panel was opened if absent. */
   queryStart?: string | null;
+  /** Per-execution tag the SQL Editor generated and passed to the backend as application_name='pg_dash:<tag>'. When present, /progress verifies pid + application_name (exact match) instead of pid + sql substring — precise, and immune to the pool-reuse race between polls. Absent when the panel opens from Activity Monitor's "watch that stranger's query" flow, which never had a tag to begin with. */
+  tag?: string | null;
   onClose: () => void;
 }
 
@@ -108,7 +110,7 @@ function mergeLiveNodes(
   return merged;
 }
 
-export default function QueryWatchPanel({ pid, sql, queryStart, onClose }: QueryWatchPanelProps) {
+export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: QueryWatchPanelProps) {
   // Segments count feeds buildRealPlanTree so we can synthesize Motion N:M
   // labels (Gather=N→1, Broadcast/Redistribute/Explicit=N→N) — whpg_plan_tree
   // ships those columns as null, so without this the plugin gives no fan-in/
@@ -172,7 +174,12 @@ export default function QueryWatchPanel({ pid, sql, queryStart, onClose }: Query
   const lastPollAtInternalRef = useRef<number>(nowMs());
 
   const poll = useCallback(() => {
-    api.getQueryProgress(pid, sql)
+    // Prefer tag when the SQL Editor gave us one — the backend looks up
+    // sess_id by pid + application_name (exact), which is immune to the
+    // read-only-wrap and multi-statement-batch reformatting that the
+    // sql substring path used to trip on. Fall back to sql for callers
+    // that never had a tag (Activity Monitor's "watch that stranger").
+    api.getQueryProgress(pid, tag ? { tag } : { sql })
       .then(progress => {
         // The shmem slots this reads (gp_instrument_shmem_detail /
         // plan_tree_detail) recycle the instant the query's backend
@@ -225,7 +232,7 @@ export default function QueryWatchPanel({ pid, sql, queryStart, onClose }: Query
         setFinished(true);
         if (pollRef.current) clearInterval(pollRef.current);
       });
-  }, [pid, sql, segmentsCount]);
+  }, [pid, sql, tag, segmentsCount]);
 
   useEffect(() => {
     poll();

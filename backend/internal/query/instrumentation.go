@@ -76,6 +76,16 @@ const SessIDForPidRunning = `
 SELECT sess_id FROM pg_stat_activity
 WHERE pid = $1 AND state = 'active' AND position($2 in query) > 0`
 
+// SessIDForPidByAppName is the tag-based version — the SQL Editor sets
+// application_name = 'pg_dash:<uuid>' on the acquired conn before running
+// the user's SQL, so we can match precisely without any string comparison
+// against the query text (which is fragile: the read-only wrap and the
+// simple-query batch form make the SQL in pg_stat_activity differ from
+// what the client submitted). $1 = pid, $2 = 'pg_dash:<uuid>'.
+const SessIDForPidByAppName = `
+SELECT sess_id FROM pg_stat_activity
+WHERE pid = $1 AND state = 'active' AND application_name = $2`
+
 // SessionMemoryForSession returns live per-segment memory usage (MB) for one
 // session, from gp_internal_tools' session_state.session_level_memory_consumption
 // view (CREATE EXTENSION gp_internal_tools; — no restart needed).

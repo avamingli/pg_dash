@@ -27,6 +27,13 @@ interface QueryTab {
   page: number;
   watchPid: number | null;
   watchQueryStart: string | null;
+  // Per-execution UUID. The backend SETs
+  // application_name='pg_dash:<tag>' on the acquired conn for the whole
+  // request, so both pid-discovery here and the Watch panel's
+  // /progress lookups can find the exact pg_stat_activity row by
+  // application_name — precise, immune to the query-text tricks the
+  // read-only wrap and multi-statement path used to play.
+  watchTag: string | null;
   showWatchPanel: boolean;
 }
 
@@ -40,34 +47,15 @@ interface HistoryEntry {
 
 const PAGE_SIZE = 50;
 
-// startPidDiscovery below matches a running pg_stat_activity row back to
-// the tab that started it by comparing query text -- there's no other
-// signal available (the pid isn't known until the query's already been
-// dispatched, and it's the row's *content*, not identity, that ties it to
-// a tab). Comparing raw strings is fragile for a multi-line query: the
-// textarea's line endings, or trailing whitespace on a wrapped line, don't
-// have to match pg_stat_activity's stored copy byte-for-byte to be the
-// same query. Collapsing all whitespace runs (newlines included) to a
-// single space before comparing makes the match robust to exactly that
-// kind of difference without weakening it in any way that would risk a
-// false match between two actually-different queries.
-//
-// The match itself is *containment*, not equality: the backend runs
-// multi-statement SQL via simple query protocol and, in read-only mode,
-// wraps it as "BEGIN READ ONLY; <user sql>; ROLLBACK;" — so
-// pg_stat_activity.query is what we sent to Postgres, which contains but
-// isn't equal to the user's original text. Substring both covers the wrap
-// and still hits the single-statement extended-protocol case (a string
-// contains itself).
-function normalizeSqlForMatch(sql: string): string {
-  return sql.replace(/\s+/g, ' ').trim();
-}
+// pg_stat_activity.application_name value we look for in pid discovery.
+// Must match backend/internal/handler/query.go's applicationNameFor().
+function appNameFor(tag: string): string { return 'pg_dash:' + tag; }
 
 function newTab(id: number): QueryTab {
   return {
     id, name: `Query ${id}`, sql: '',
     running: false, result: null, explainResult: null, error: '', duration: null,
-    page: 0, watchPid: null, watchQueryStart: null, showWatchPanel: false,
+    page: 0, watchPid: null, watchQueryStart: null, watchTag: null, showWatchPanel: false,
   };
 }
 
@@ -134,21 +122,26 @@ export default function SQLEditor() {
   }
 
   // Poll Activity Monitor's connection list (same data that page already
-  // shows) to find the pid this exact SQL just started running as, without
-  // making the user navigate over there themselves. Gives up after ~4.5s —
-  // fast queries just won't get a Watch shortcut, which is fine, there's
-  // nothing to watch by the time we'd find it anyway.
-  function startPidDiscovery(tabId: number, sql: string) {
+  // shows) to find the pid this exact request is running on. We told the
+  // backend to SET application_name = 'pg_dash:<tag>' for the whole
+  // request, so the match here is precise: filter by application_name and
+  // take the newest active row. No more query-text substring games (which
+  // used to false-negative on read-only-wrapped multi-statement paste)
+  // and no more cross-tab pid collisions between two tabs running similar
+  // SQL. Gives up after ~4.5s — fast queries just won't get a Watch
+  // shortcut, which is fine, there's nothing to watch by the time we'd
+  // find it anyway.
+  function startPidDiscovery(tabId: number, tag: string) {
     if (pidPollRefs.current[tabId]) clearInterval(pidPollRefs.current[tabId]);
-    updateTab(tabId, { watchPid: null, watchQueryStart: null });
-    const normalizedSql = normalizeSqlForMatch(sql);
+    updateTab(tabId, { watchPid: null, watchQueryStart: null, watchTag: tag });
+    const wantAppName = appNameFor(tag);
     let attempts = 0;
     const poll = () => {
       attempts += 1;
       api.getActivity()
         .then(conns => {
           const match = conns
-            .filter(c => c.state === 'active' && c.query && normalizeSqlForMatch(c.query).includes(normalizedSql))
+            .filter(c => c.state === 'active' && c.application_name === wantAppName)
             .sort((a, b) => (b.query_start ?? '').localeCompare(a.query_start ?? ''))[0];
           if (match) {
             updateTab(tabId, { watchPid: match.pid, watchQueryStart: match.query_start });
@@ -177,7 +170,13 @@ export default function SQLEditor() {
     const sql = tab?.sql.trim() ?? '';
     if (!sql || tab?.running) return;
 
-    updateTab(tabId, { running: true, result: null, explainResult: null, error: '', page: 0 });
+    // Fresh per-execute tag. The backend sets application_name to
+    // 'pg_dash:<tag>' on the acquired conn for the whole request; the
+    // pid-discovery poll and the Watch panel /progress lookups both
+    // find our exact pg_stat_activity row through it, no string match
+    // against query text needed.
+    const tag = crypto.randomUUID();
+    updateTab(tabId, { running: true, result: null, explainResult: null, error: '', page: 0, watchTag: tag });
     const start = performance.now();
 
     // Needed for Cancel regardless of whether the Watch feature itself is
@@ -185,7 +184,7 @@ export default function SQLEditor() {
     // conditional on whether the live-plan capability exists on this
     // server, so this must not be gated on it too.
     if (!explain) {
-      startPidDiscovery(tabId, sql);
+      startPidDiscovery(tabId, tag);
     }
 
     try {
@@ -195,7 +194,7 @@ export default function SQLEditor() {
         updateTab(tabId, { explainResult: res.plan as string | object, duration: elapsed });
         setHistory(prev => [{ sql, timestamp: new Date(), duration: elapsed }, ...prev].slice(0, 50));
       } else {
-        const res = await api.executeQuery(sql, readOnly, database || undefined);
+        const res = await api.executeQuery(sql, readOnly, database || undefined, tag);
         const elapsed = performance.now() - start;
         updateTab(tabId, { result: res, duration: elapsed });
         setHistory(prev => [{ sql, timestamp: new Date(), duration: elapsed, rowCount: res.row_count }, ...prev].slice(0, 50));
@@ -486,6 +485,7 @@ export default function SQLEditor() {
           pid={activeTab.watchPid}
           sql={activeTab.sql.trim()}
           queryStart={activeTab.watchQueryStart}
+          tag={activeTab.watchTag}
           onClose={() => updateTab(activeTabId, { showWatchPanel: false })}
         />
       )}

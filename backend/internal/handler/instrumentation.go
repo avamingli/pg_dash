@@ -55,12 +55,21 @@ func queryProgressHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager
 
 		ctx := r.Context()
 
-		// If the caller tells us which SQL it's watching, also verify that
-		// pid is still actively running it — a bare pid match isn't enough
-		// once the connection can be handed back to pg_dash's own pool and
-		// picked up by an unrelated query (see SessIDForPidRunning).
+		// Two ways to double-check that `pid` is still running the query
+		// the caller wants to watch (not a random unrelated query that
+		// grabbed the same pid off pg_dash's pool between polls):
+		//   * tag → precise match against pg_stat_activity.application_name
+		//     that the SQL Editor set on the conn before running the SQL
+		//   * sql → substring match against pg_stat_activity.query
+		//     (older path, fragile against read-only-wrap and multi-
+		//     statement batch reformatting — kept as fallback)
+		// Bare pid-only lookup as a last resort (e.g. Activity Monitor's
+		// "watch that stranger's query" flow, where no tag exists).
+		tag := r.URL.Query().Get("tag")
 		sessIDQuery, args := query.SessIDForPid, []any{pid}
-		if sql != "" {
+		if tag != "" {
+			sessIDQuery, args = query.SessIDForPidByAppName, []any{pid, applicationNameFor(tag)}
+		} else if sql != "" {
 			sessIDQuery, args = query.SessIDForPidRunning, []any{pid, sql}
 		}
 

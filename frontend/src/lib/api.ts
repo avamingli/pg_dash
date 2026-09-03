@@ -94,18 +94,25 @@ export const api = {
   // Queries / Statements
   getTopQueries: (by = 'time', limit = 20) =>
     request<Record<string, unknown>[]>(`/api/queries/top?by=${by}&limit=${limit}`),
-  executeQuery: (sql: string, readOnly = true, database?: string) =>
+  executeQuery: (sql: string, readOnly = true, database?: string, tag?: string) =>
     request<QueryResult>('/api/query/execute', {
       method: 'POST',
-      body: JSON.stringify({ sql, read_only: readOnly, database }),
+      body: JSON.stringify({ sql, read_only: readOnly, database, tag }),
     }),
   explainQuery: (sql: string, analyze = false, buffers = false, database?: string) =>
     request<{ plan: unknown; sql: string }>('/api/query/explain', {
       method: 'POST',
       body: JSON.stringify({ sql, analyze, buffers, database }),
     }),
-  getQueryProgress: (pid: number, sql?: string) =>
-    request<QueryProgress>(`/api/queries/${pid}/progress${sql ? `?sql=${encodeURIComponent(sql)}` : ''}`),
+  getQueryProgress: (pid: number, opts?: { sql?: string; tag?: string }) => {
+    const p = new URLSearchParams();
+    // tag wins over sql — the tag is a precise application_name match,
+    // no chance of a substring collision the sql path could suffer.
+    if (opts?.tag) p.set('tag', opts.tag);
+    else if (opts?.sql) p.set('sql', opts.sql);
+    const qs = p.toString();
+    return request<QueryProgress>(`/api/queries/${pid}/progress${qs ? '?' + qs : ''}`);
+  },
   resetStatements: () =>
     request<{ status: string }>('/api/statements/reset', { method: 'POST' }),
 

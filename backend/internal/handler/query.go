@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/avamingli/dbhouse-web/backend/internal/query"
 	"github.com/avamingli/dbhouse-web/backend/internal/service"
@@ -71,7 +72,20 @@ type executeRequest struct {
 	SQL      string `json:"sql"`
 	ReadOnly bool   `json:"read_only"`
 	Database string `json:"database"` // optional; defaults to the PG_DSN database
+	// Tag is an opaque, per-request identifier the frontend generates
+	// (a UUID) so the Watch panel can find this exact query in
+	// pg_stat_activity without having to substring-match on its SQL
+	// text. We SET application_name = 'pg_dash:'+tag on the acquired
+	// connection for the duration of the request, then RESET it so the
+	// pool conn doesn't leak the tag into unrelated queries.
+	Tag string `json:"tag"`
 }
+
+// applicationNameFor returns the pg_stat_activity.application_name value
+// used to tag a query execution. Kept in one place so the SQL Editor
+// (execute endpoint) and the Watch panel (progress endpoint) agree on
+// the exact prefix without either side hard-coding it.
+func applicationNameFor(tag string) string { return "pg_dash:" + tag }
 
 // collectRows reads every row out of a pgx.Rows into a JSON-friendly shape.
 // The returned rows slice is always non-nil (even with zero rows) — a nil
@@ -109,21 +123,17 @@ func isMultiStatementError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "cannot insert multiple commands into a prepared statement")
 }
 
-// execMultiStatement runs a multi-statement SQL string via the simple query
-// protocol (bypassing pgx's Query, which can't prepare more than one
-// command) and returns the *last* statement's result — matching what a
-// human pasting "SET ...; SELECT ..." into psql actually wants to see.
-// Values are decoded through the same type map pgx's own Rows.Values() uses,
-// so results keep native JSON typing (numbers stay numbers, not "123"
-// strings) despite going through the lower-level pgconn API to get at every
-// statement's result instead of just the first.
-func execMultiStatement(ctx context.Context, pool *pgxpool.Pool, sql string, readOnly bool) (columns []string, resultRows []map[string]any, err error) {
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("execMultiStatement: %w", err)
-	}
-	defer conn.Release()
-
+// execMultiStatementOnConn runs a multi-statement SQL string via the simple
+// query protocol on an already-acquired conn (bypassing pgx's Query, which
+// can't prepare more than one command) and returns the *last* statement's
+// result — matching what a human pasting "SET ...; SELECT ..." into psql
+// actually wants to see. Takes an existing conn so the caller can pin
+// application_name to a specific request via SET application_name before
+// calling us. Values are decoded through the same type map pgx's own
+// Rows.Values() uses, so results keep native JSON typing (numbers stay
+// numbers, not "123" strings) despite going through the lower-level
+// pgconn API to get at every statement's result instead of just the first.
+func execMultiStatementOnConn(ctx context.Context, conn *pgxpool.Conn, sql string, readOnly bool) (columns []string, resultRows []map[string]any, err error) {
 	if readOnly {
 		sql = "BEGIN READ ONLY; " + sql + "; ROLLBACK;"
 	}
@@ -206,13 +216,45 @@ func executeQueryHandler(defaultPool *pgxpool.Pool, connMgr *service.ConnectionM
 			pool = dbPool
 		}
 
+		// Acquire a specific connection for this whole request so we can
+		// pin application_name to a per-request tag. Everything below runs
+		// on `conn`, not on the pool, so all the SQL — the tag SET, the
+		// user's query, the optional BEGIN/ROLLBACK wrapping, the RESET —
+		// hits the same backend and shows up under the same pg_stat_activity
+		// row that the Watch panel is watching.
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "acquire conn: "+err.Error())
+			return
+		}
+		// Reset with a fresh context — r.Context() is already cancelled by
+		// the time the deferred cleanup runs on a client disconnect, but
+		// the pool conn we're releasing back is still healthy and we'd
+		// rather leave it clean than leak a stale application_name into the
+		// next handler that reuses this slot.
+		defer func() {
+			if req.Tag != "" {
+				resetCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_, _ = conn.Exec(resetCtx, "RESET application_name")
+				cancel()
+			}
+			conn.Release()
+		}()
+
+		if req.Tag != "" {
+			if _, err := conn.Exec(ctx, "SELECT set_config('application_name', $1, false)", applicationNameFor(req.Tag)); err != nil {
+				writeError(w, http.StatusInternalServerError, "tag conn: "+err.Error())
+				return
+			}
+		}
+
 		var columns []string
 		var resultRows []map[string]any
 
 		if req.ReadOnly {
 			// Wrap in an explicit read-only transaction, always rolled back,
 			// as a safety net against any statement that tries to write.
-			tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+			tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
@@ -222,7 +264,7 @@ func executeQueryHandler(defaultPool *pgxpool.Pool, connMgr *service.ConnectionM
 			rows, err := tx.Query(ctx, req.SQL)
 			if isMultiStatementError(err) {
 				tx.Rollback(ctx)
-				columns, resultRows, err = execMultiStatement(ctx, pool, req.SQL, true)
+				columns, resultRows, err = execMultiStatementOnConn(ctx, conn, req.SQL, true)
 			} else if err == nil {
 				columns, resultRows, err = collectRows(rows)
 				rows.Close()
@@ -233,13 +275,13 @@ func executeQueryHandler(defaultPool *pgxpool.Pool, connMgr *service.ConnectionM
 				return
 			}
 		} else {
-			// Run directly against the pool — no explicit transaction. Some
+			// Run directly on the conn — no explicit transaction. Some
 			// statements (CREATE DATABASE, VACUUM, CREATE INDEX CONCURRENTLY,
 			// ALTER SYSTEM, ...) refuse to run inside a transaction block at
 			// all, so wrapping every write in one would break them.
-			rows, err := pool.Query(ctx, req.SQL)
+			rows, err := conn.Query(ctx, req.SQL)
 			if isMultiStatementError(err) {
-				columns, resultRows, err = execMultiStatement(ctx, pool, req.SQL, false)
+				columns, resultRows, err = execMultiStatementOnConn(ctx, conn, req.SQL, false)
 			} else if err == nil {
 				columns, resultRows, err = collectRows(rows)
 				rows.Close()
