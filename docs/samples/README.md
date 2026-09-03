@@ -6,7 +6,7 @@ Canned `.json` recordings for the Watch-panel replay feature (Phase 2, see [`../
 
 | File | Query shape | Frames | Wall time | Exercises |
 |---|---|---|---|---|
-| `four-join.json` | 4-way JOIN + `GROUP BY` + `LIMIT 20` on a 3-segment Cloudberry cluster | 15 | ~12.6 s | 7 slices, both dim tables (s4 nations, s6 products) finish before any poll can see them — verifies Rule B (parent-completed → child-inferred-done). Fact scans (s3 orders, s5 lineitem) grow over most of the run — verifies per-node sticky bars. Coord (s1) receives 20 aggregated rows near the end. Memory ramps 48→248 MB peak then decays. |
+| `four-join.json` | 4-way JOIN + `GROUP BY` + `LIMIT 20` on a 3-segment Cloudberry cluster | 15 | ~12.6 s | 6 slices, both dim tables (s4 nations, s6 products) finish before any poll can see them — verifies Rule B (parent-completed → child-inferred-done). Fact scans (s3 orders, s5 lineitem) grow over most of the run — verifies per-node sticky bars. Coord (s1) receives 20 aggregated rows near the end. Memory ramps 48→248 MB peak then decays. |
 
 ## Regenerating
 
@@ -31,4 +31,6 @@ Keep sample files under ~1 MB — anything bigger and GitHub throttles diff rend
 
 The replay engine consumes samples by re-running the same aggregation pipeline the live Watch panel uses. Before shipping a new sample, walk it through the pipeline once to make sure it exercises what you intended.
 
-Fresh session or ad-hoc: write a small Node script that reimplements the pipeline (mirroring `frontend/src/lib/planTree.ts` — the functions are small and dependency-free). Print per-frame `{ slices-present, seenActive, done }` and eyeball the ordering. Post-Phase-2 there will be a proper test harness in `frontend/src/lib/replay.test.ts` — samples should get a test case there too.
+Run it through the replay engine and assert on the result: `frontend/src/lib/replay.test.ts` imports `four-join.json` straight from this directory, folds it with `replayRecording`, and pins the per-frame slice-done ordering, `seenActive`, frozen activeMs and memory curve. Add a case there for every new sample — that is the round-trip guard for both the pipeline and the file format.
+
+`npx vitest run src/lib/replay.test.ts` from `frontend/` runs just those.
