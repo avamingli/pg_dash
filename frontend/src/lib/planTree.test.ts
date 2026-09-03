@@ -302,20 +302,28 @@ describe('computeCompletedSlices', () => {
     expect(done.size).toBe(0);
   });
 
-  it('unions with priorDone — once a slice is done, it stays done across polls', () => {
-    // Sticky monotonicity contract: even if the per-poll rules stop
-    // firing for a slice (measurement gap, spurious subtreeGrew flip),
-    // the returned set always includes priorDone.
+  it('retracts done if a node in the slice becomes active later (no priorDone sticky at slice level)', () => {
+    // The consistency contract: slice done ⟺ the sidebar and the
+    // graph agree. If any node in the slice reads 'active' now
+    // (its bar isn't full), the slice can NOT be marked done — no
+    // matter what earlier polls said. Slice-level sticky ("once
+    // done, always done") would lock in a mismatch — a slice
+    // shown done in the sidebar while its HJ card still shimmers
+    // as active — which is exactly the bug we don't want.
     const { sliceIds, parentByNid } = buildTree({
-      // All-idle now — none of the rules fire this poll:
-      100: 'idle', 10: 'idle', 20: 'idle', 21: 'idle',
-      30: 'idle', 31: 'idle', 32: 'idle', 40: 'idle', 41: 'idle',
+      // Slice 4: hj_mid (nid 31) is currently active (per-node sticky
+      // keeps it that way after any past growth). Slice 4 must not
+      // read done, no matter what earlier calls returned.
+      30: 'completed', 31: 'active', 32: 'completed',
+      // Slice 5: parent hj_mid is 'active' (not 'completed'), so
+      // Rule B doesn't fire; own nodes idle → not done.
+      40: 'idle', 41: 'idle',
     });
-    const priorDone = new Set([3, 4, 5]);
-    const done = computeCompletedSlices(sliceIds, {}, parentByNid, priorDone);
-    expect(done.has(3)).toBe(true);
-    expect(done.has(4)).toBe(true);
-    expect(done.has(5)).toBe(true);
+    const done = computeCompletedSlices(sliceIds, {
+      30: 'completed', 31: 'active', 32: 'completed', 40: 'idle', 41: 'idle',
+    }, parentByNid);
+    expect(done.has(4)).toBe(false);
+    expect(done.has(5)).toBe(false);
   });
 });
 

@@ -370,18 +370,9 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
   // slice can flicker in/out of it as HJ 8 (the ancestor) briefly has
   // no new tuples between polls, so we don't feed this directly to the
   // panel — everCompletedSlices accumulates monotonically below.
-  // Monotonic set of every slice ever marked done — computed as
-  // `computeCompletedSlices(...)` unioned with the prior known-done
-  // set, so any signal that once said done wins over later signals
-  // that don't. The rules approximate a fact that IS monotonic (the
-  // gang has torn down); a poll where the signal disagrees is a
-  // measurement gap, not evidence the slice restarted. Keeping this
-  // in state is what carries "s5 was done at poll 5" forward to
-  // polls 6, 7, ... even when Rule A briefly stops firing.
-  const [everCompletedSlices, setEverCompletedSlices] = useState<Set<number>>(() => new Set());
   const currentlyCompleted = useMemo(
-    () => computeCompletedSlices(sliceIds, nodeStates, parentNidBySlice ?? undefined, everCompletedSlices),
-    [sliceIds, nodeStates, parentNidBySlice, everCompletedSlices],
+    () => computeCompletedSlices(sliceIds, nodeStates, parentNidBySlice ?? undefined),
+    [sliceIds, nodeStates, parentNidBySlice],
   );
   // Freeze a slice's activeMs at the moment it first became topology-
   // completed — the sticky slice-credit rule in advanceSliceTiming
@@ -389,15 +380,13 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
   // finished sending at 5s of a 30s query kept showing "27s done" as
   // the wall clock advanced. The frozen value is what the sidebar
   // displays instead. First-seen wins; subsequent polls never
-  // overwrite.
+  // overwrite — even if the slice temporarily leaves currentlyCompleted
+  // (a downstream node lights up and Rule A's "no active" guard
+  // rejects it for a while), the frozen value we captured the first
+  // time it landed is still the right snapshot of "how long the slice
+  // was actively running before its gang wound down."
   const [completedFrozenMs, setCompletedFrozenMs] = useState<Record<number, number>>({});
   useEffect(() => {
-    // currentlyCompleted is already union(everCompletedSlices, this-
-    // poll rules) so it's always ⊇ everCompletedSlices — only need
-    // to update state when size actually grew.
-    if (currentlyCompleted.size !== everCompletedSlices.size) {
-      setEverCompletedSlices(currentlyCompleted);
-    }
     let frozenChanged = false;
     const nextFrozen = { ...completedFrozenMs };
     for (const s of currentlyCompleted) {
@@ -407,7 +396,7 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
       }
     }
     if (frozenChanged) setCompletedFrozenMs(nextFrozen);
-  }, [currentlyCompleted, everCompletedSlices, completedFrozenMs, sliceTiming.activeMs]);
+  }, [currentlyCompleted, completedFrozenMs, sliceTiming.activeMs]);
   const completedSlicesForSummary = useMemo(() => {
     // Query has ended → every slice necessarily ran. computeNodeCompletionStates
     // marks a node 'completed' only when an ancestor is currently growing;

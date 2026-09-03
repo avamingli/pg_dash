@@ -497,19 +497,18 @@ export function computeParentNidBySlice(root: PlanNode, sliceIds: Map<PlanNode, 
  *       (very fast dim-table slices whose gangs tore down before the
  *       first poll caught them, leaving every node stuck at 'idle').
  *
- * The result is always the union of rules-fired-this-poll with the
- * caller-supplied `priorDone` set. Once a slice is done it stays done
- * — rules are approximations of a monotonic underlying fact (the
- * gang has torn down), so any signal that once said done wins over
- * later signals that say otherwise (a spurious subtreeGrew flip, a
- * missed poll, etc). The caller can rely on the returned Set never
- * shrinking across polls, and this function itself is idempotent
- * (returns a Set that includes everything in `priorDone`).
- *
- * The `no active in slice` guard blocks the "slice 3 still running
- * but sidebar says 100%" bug: if any node in the slice is currently
- * growing or has a growing subtree, we don't ADD it to done (we still
- * keep prior done-ness).
+ * The `no active in slice` guard on both rules is what keeps the
+ * sidebar and the graph in agreement: as long as any node in the
+ * slice currently reads `active` (its bar isn't fully filled), the
+ * slice is not marked done, no matter what any past poll's signals
+ * said. Callers achieve stability by passing a `nodeStates` that is
+ * itself monotonic (see computeNodeCompletionStates's priorStates
+ * argument) — without that, Rule A/B can flap in both directions on
+ * poll-to-poll noise, but the monotonic node states make the slice
+ * signal stable and consistent with what the graph shows without
+ * needing a separate priorDone-sticky layer at the slice level
+ * (which was the previous approach, but locked in stale done for
+ * slices whose nodes later legitimately lit up).
  *
  * The `parent completed` restriction in Rule B (rather than "parent
  * active or completed") prevents an all-idle sibling from being
@@ -519,9 +518,8 @@ export function computeCompletedSlices(
   sliceIds: Map<PlanNode, number> | null,
   nodeStates: Record<number, NodeCompletionState>,
   parentNidBySlice?: Map<number, number | undefined>,
-  priorDone?: Set<number>,
 ): Set<number> {
-  const done = new Set<number>(priorDone ?? []);
+  const done = new Set<number>();
   if (!sliceIds) return done;
 
   const hasActive = new Set<number>();
@@ -537,7 +535,6 @@ export function computeCompletedSlices(
   const allSliceIds = new Set<number>();
   for (const sid of sliceIds.values()) allSliceIds.add(sid);
   for (const sid of allSliceIds) {
-    if (done.has(sid)) continue;
     if (hasActive.has(sid)) continue;
     if (hasCompleted.has(sid)) { done.add(sid); continue; }
     const parentNid = parentNidBySlice?.get(sid);
