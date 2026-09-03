@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, type PointerEvent } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef, type PointerEvent } from 'react';
 import { X, RefreshCw, AlertTriangle } from 'lucide-react';
 import { api } from '@/lib/api';
 import PlanViewer, { type LiveNodeStats } from '@/components/PlanViewer';
@@ -6,7 +6,7 @@ import { useMetrics } from '@/contexts/MetricsContext';
 import {
   type PlanNode, type SliceTiming, EMPTY_SLICE_TIMING,
   buildRealPlanTree, computeSliceIds, sliceIdsByNid, advanceSliceTiming, summarizeSlices,
-  estimateCompletionPct,
+  estimateCompletionPct, computeNodeCompletionStates, computeCompletedSlices,
 } from '@/lib/planTree';
 import type { QueryProgressNode, QueryProgressPlanNode } from '@/types/metrics';
 
@@ -256,7 +256,50 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
   // this to 100% immediately via `finished`, instead of freezing at
   // whatever number happened to be in flight the moment it ended.
   const runTimeMs = (finished ? lastPollAt : nowMs()) - startMs;
-  const sliceSummaries = sliceIds ? summarizeSlices(sliceIds, sliceTiming.activeMs, runTimeMs) : [];
+  // Which slices are known-completed by topology (their nodes are in
+  // state='completed' because an ancestor is currently holding rows).
+  // Lets SliceSummaryPanel show "done" for slices that finished before
+  // our 800ms polling ever caught them producing — no observed activeMs,
+  // but plan-tree completion inference makes it clear they ran.
+  const root = useMemo(
+    () => (realPlan ? buildRealPlanTree(realPlan, segmentsCount) : null),
+    [realPlan, segmentsCount],
+  );
+  const nodeStates = useMemo(
+    () => computeNodeCompletionStates(root, liveNodes),
+    [root, liveNodes],
+  );
+  // The raw per-poll "which slices look completed *right now*" set. A
+  // slice can flicker in/out of it as HJ 8 (the ancestor) briefly has
+  // no new tuples between polls, so we don't feed this directly to the
+  // panel — everCompletedSlices accumulates monotonically below.
+  const currentlyCompleted = useMemo(
+    () => computeCompletedSlices(sliceIds, nodeStates),
+    [sliceIds, nodeStates],
+  );
+  const [everCompletedSlices, setEverCompletedSlices] = useState<Set<number>>(() => new Set());
+  useEffect(() => {
+    if (currentlyCompleted.size === 0) return;
+    setEverCompletedSlices(prev => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const s of currentlyCompleted) if (!prev.has(s)) { next.add(s); changed = true; }
+      return changed ? next : prev;
+    });
+  }, [currentlyCompleted]);
+  const completedSlicesForSummary = useMemo(() => {
+    // Query has ended → every slice necessarily ran. computeNodeCompletionStates
+    // marks a node 'completed' only when an ancestor is currently growing;
+    // a query that just ended has no growing anywhere, so an empty
+    // completed set is expected right at the finish. Fall back to "all
+    // slices are done" so SliceSummaryPanel doesn't drop the ✓ badge
+    // off half the rows the moment the query completes.
+    if (finished && sliceIds) return new Set(sliceIds.values());
+    return everCompletedSlices;
+  }, [finished, sliceIds, everCompletedSlices]);
+  const sliceSummaries = sliceIds
+    ? summarizeSlices(sliceIds, sliceTiming.activeMs, runTimeMs, completedSlicesForSummary)
+    : [];
   const overallProgressPct = rootMeta?.nid != null
     ? estimateCompletionPct(liveNodes[rootMeta.nid], rootMeta.estRows, finished)
     : null;

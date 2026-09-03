@@ -325,9 +325,11 @@ export interface SliceTiming {
   activeMs: Record<number, number>;
   /** Each nid's row count as of the last poll — advanceSliceTiming's own bookkeeping, not for display. */
   rawRows: Record<number, number>;
+  /** Slices ever observed with rows > 0 in one of their nodes. Sticky: once a slice makes it in, we keep crediting it as long as any of its nodes is still visible in shmem — a Motion whose rows briefly spike then recycle to a bare coord placeholder shouldn't lose its slice's credit the poll after we caught it. */
+  seenActive: Set<number>;
 }
 
-export const EMPTY_SLICE_TIMING: SliceTiming = { activeMs: {}, rawRows: {} };
+export const EMPTY_SLICE_TIMING: SliceTiming = { activeMs: {}, rawRows: {}, seenActive: new Set() };
 
 /**
  * No per-node timing is captured anywhere (see whpg_plan_tree's own
@@ -335,27 +337,33 @@ export const EMPTY_SLICE_TIMING: SliceTiming = { activeMs: {}, rawRows: {} };
  * per-slice CPU/wall time any more than it has real segment counts), so
  * "how long has this slice been running" is approximated the same way the
  * rest of this Watch feature approximates progress: by observing it from
- * outside, one poll at a time. A slice counts as active for an interval
- * as long as at least one of its nodes still has a shmem entry — even a
- * zero-row placeholder left by a recycled leaf's coord dispatcher. The
- * interval's wall-clock length gets added to that slice's total.
+ * outside, one poll at a time.
  *
- * The credit rule is deliberately *presence*, not *rows produced*:
+ * A slice is credited for a poll interval if either:
+ *   1. Any of its nodes has rows > 0 this poll — the slice is actively
+ *      producing observable output, or holding a produced value in a
+ *      Motion/Hash slot whose gang hasn't torn down yet.
+ *   2. The slice has ever been credited under rule (1) before AND at
+ *      least one of its nodes is still in this poll's freshByNode — its
+ *      gang is still alive even though the observable output slot may
+ *      have flatlined or been recycled to a coord-only placeholder.
  *
- *   - Motion/Hash nodes flatline at their final row count the instant
- *     their phase completes, but their shmem row stays until the whole
- *     slice's gang tears down — matches the reality that the slice is
- *     still alive downstream.
- *   - Fast dim-table leaves recycle their worker slots almost immediately;
- *     the only shmem entry left is a {segid=-1, rows=0} placeholder from
- *     the coord dispatcher. Presence still counts them, so slices whose
- *     leaves we only ever saw in that recycled state (slices 4/5/7 in a
- *     typical star-join over a lineitem fact table) still get credit for
- *     the wall time they were alive.
- *   - Pure hoarders (Sort / top-of-plan Aggregate / top-of-plan Limit)
- *     also register — their coord entries are present throughout, even
- *     though they emit nothing until the very end. That's honest: the
- *     slice's process *is* running, it's just accumulating.
+ * Why not just "grew this interval": that credits only the brief
+ * production windows and drops slices the moment a Motion plateaus,
+ * making a dim-table slice that fully completed early read as 1% or 0%
+ * of total time even though its plan-tree nodes clearly show 100% done.
+ * Why not just "any node in shmem": coord's dispatcher Instrumentation
+ * slots for every plan node live from query start to end, which credits
+ * every slice for the whole query and flattens the panel to a wall of
+ * 99%s.
+ *
+ * A slice whose nodes we never observe with rows > 0 (all polls returned
+ * only 0-row coord placeholders — a common outcome for very fast dim-table
+ * slices whose leaves recycled between polls) will stay at 0%. That's a
+ * real observability limitation of an 800ms poll against a shmem source
+ * with slot-recycling; the plan-tree completion-inference can still show
+ * 100% for those nodes from topology, but the sidebar timer only reports
+ * what it actually measured.
  *
  * rawRows is kept as bookkeeping for callers that still want per-nid
  * delta information but isn't consulted by the active-slice decision.
@@ -366,18 +374,30 @@ export function advanceSliceTiming(
   nidToSlice: Map<number, number>,
   dtMs: number,
 ): SliceTiming {
-  const activeSlices = new Set<number>();
-  for (const nidStr of Object.keys(freshByNode)) {
+  const producingNow = new Set<number>();
+  const slicesPresent = new Set<number>();
+  for (const [nidStr, stats] of Object.entries(freshByNode)) {
     const sliceId = nidToSlice.get(Number(nidStr));
-    if (sliceId != null) activeSlices.add(sliceId);
+    if (sliceId == null) continue;
+    slicesPresent.add(sliceId);
+    if (stats.rows > 0) producingNow.add(sliceId);
   }
+
+  const seenActive = new Set(prev.seenActive);
+  for (const sid of producingNow) seenActive.add(sid);
+
+  const credited = new Set(producingNow);
+  for (const sid of slicesPresent) {
+    if (seenActive.has(sid)) credited.add(sid);
+  }
+
   const activeMs = { ...prev.activeMs };
-  for (const sid of activeSlices) activeMs[sid] = (activeMs[sid] ?? 0) + dtMs;
+  for (const sid of credited) activeMs[sid] = (activeMs[sid] ?? 0) + dtMs;
 
   const rawRows: Record<number, number> = {};
   for (const [nidStr, stats] of Object.entries(freshByNode)) rawRows[Number(nidStr)] = stats.rows;
 
-  return { activeMs, rawRows };
+  return { activeMs, rawRows, seenActive };
 }
 
 export interface SliceSummary {
@@ -397,12 +417,22 @@ export interface SliceSummary {
    * flatten every slice to ~1/N regardless of how long it really lived.
    */
   pct: number;
+  /**
+   * True if plan-tree completion inference says this slice's nodes have
+   * finished producing (their ancestors in the tree are visibly holding
+   * rows the slice supplied). Independent of `activeMs`: a slice that
+   * completed before any of our polls caught it will still have
+   * activeMs=0 but completed=true — the SliceSummaryPanel renders that
+   * as "done" so it's not confused with a slice that hasn't started.
+   */
+  completed: boolean;
 }
 
 export function summarizeSlices(
   sliceIds: Map<PlanNode, number>,
   activeMs: Record<number, number>,
   runTimeMs: number,
+  completedSlices?: Set<number>,
 ): SliceSummary[] {
   const ids = [...new Set(sliceIds.values())].sort((a, b) => a - b);
   return ids.map(id => {
@@ -412,8 +442,29 @@ export function summarizeSlices(
       label: `Slice ${id}`,
       activeMs: ms,
       pct: runTimeMs > 0 ? Math.min(100, (ms / runTimeMs) * 100) : 0,
+      completed: completedSlices?.has(id) ?? false,
     };
   });
+}
+
+/**
+ * A slice is "known completed" (topology-inferred) if any of its nodes has
+ * state='completed' — meaning some ancestor in the plan tree is currently
+ * holding rows, so this slice must have already fed data upstream. Slices
+ * whose only signal is subtreeGrew-derived 'active' (hoarders consuming
+ * from below) don't count as completed — they're still running.
+ */
+export function computeCompletedSlices(
+  sliceIds: Map<PlanNode, number> | null,
+  nodeStates: Record<number, NodeCompletionState>,
+): Set<number> {
+  const done = new Set<number>();
+  if (!sliceIds) return done;
+  for (const [node, sliceId] of sliceIds) {
+    const nid = node.Nid;
+    if (nid != null && nodeStates[nid] === 'completed') done.add(sliceId);
+  }
+  return done;
 }
 
 /** "Run Time"-style h/m/s formatting for a whole query — unlike formatMs's us/ms/s scale for one node's own time. */

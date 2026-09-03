@@ -212,6 +212,27 @@ export default function PlanGraph({
   sliceSummaries, runTimeMs, estProgressPct,
 }: PlanGraphProps) {
   const [selected, setSelected] = useState<PlanNode | null>(null);
+  const detailRef = useRef<HTMLDivElement>(null);
+  // Auto-close the node detail panel on any mousedown outside it: clicking
+  // another node (switch selection), a toolbar button (zoom/fit/etc), a
+  // slice pill (isolate slice), a spot on the graph background, or any
+  // other UI beyond this component. Using mousedown so the close fires
+  // *before* click — a card's onClick can then re-set selection in the
+  // same gesture, giving a natural "click through to switch" behavior.
+  useEffect(() => {
+    if (!selected) return;
+    const handler = (e: MouseEvent) => {
+      const el = detailRef.current;
+      if (el && !el.contains(e.target as Node)) setSelected(null);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [selected]);
+  // Click a slice pill (on a card or in the SliceSummaryPanel) to isolate
+  // that slice — nodes not in it fade out, edges too, making the shape
+  // and reach of one slice's gang instantly visible. Null = no filter.
+  const [highlightSlice, setHighlightSlice] = useState<number | null>(null);
+  const toggleHighlight = (sid: number) => setHighlightSlice(prev => prev === sid ? null : sid);
   const [zoom, setZoom] = useState(1);
   // Pan offset in pixels, applied via `translate()` on the content layer —
   // deliberately not scrollLeft/scrollTop. A scroll-based pan can only ever
@@ -335,6 +356,18 @@ export default function PlanGraph({
     if (el && panRef.current?.pointerId === e.pointerId) {
       try { el.releasePointerCapture(e.pointerId); } catch { /* already released */ }
     }
+    // A click on empty canvas (pointer down + up with no meaningful drag,
+    // and not landing on a node card or slice pill) clears any active
+    // slice isolation. Card buttons and the sN pill are role='button', so
+    // this ignores them; a plain click on the viewport background is what
+    // makes it back here.
+    const wasClick = panRef.current != null && !panRef.current.moved;
+    if (wasClick && highlightSlice != null) {
+      const target = e.target as HTMLElement | null;
+      if (!target?.closest('button, [role="button"]')) {
+        setHighlightSlice(null);
+      }
+    }
     panRef.current = null;
     setIsPanning(false);
   };
@@ -404,6 +437,15 @@ export default function PlanGraph({
             // but a consumer hasn't emitted anything yet so its outgoing
             // edge shouldn't read as "data flowing up" here.
             const flowing = !finished && childLive?.growing === true;
+            // Dim edges that don't touch the highlighted slice.
+            // An edge "belongs" to a slice iff either endpoint is in it —
+            // that keeps the slice-boundary edges (Motion → its parent
+            // slice's consumer) fully visible when either side is picked.
+            const parentSlice = ln.node['Slice'];
+            const childSlice = child.node['Slice'];
+            const edgeDimmed = highlightSlice != null
+              && parentSlice !== highlightSlice
+              && childSlice !== highlightSlice;
             return (
               <path
                 key={`${ln.node.Nid ?? ln.x}-${i}`}
@@ -414,6 +456,7 @@ export default function PlanGraph({
                 strokeLinecap="round"
                 className={flowing ? 'pg-edge-flow' : undefined}
                 markerEnd={flowing ? 'url(#pg-arrow-active)' : 'url(#pg-arrow)'}
+                style={{ opacity: edgeDimmed ? 0.35 : 1, transition: 'opacity 200ms' }}
               />
             );
           }))}
@@ -479,14 +522,28 @@ export default function PlanGraph({
             ? '0 0 0 1px rgba(16,185,129,0.25), 0 0 16px 2px rgba(16,185,129,0.35)'
             : undefined;
 
+          const cardDimmed = highlightSlice != null && sliceId !== highlightSlice;
+          const cardHighlighted = highlightSlice != null && sliceId === highlightSlice;
+          // When a slice is isolated, keep non-members visible but muted
+          // (~half opacity) so the tree structure and edges stay
+          // legible — the earlier 0.22 read as "almost invisible", which
+          // hid everything the user still wanted as context. Members of
+          // the highlighted slice get an outer ring in their own slice
+          // color as a positive contrast on top of the negative dimming.
+          let effectiveBoxShadow = boxShadow;
+          if (cardHighlighted && sliceHex) {
+            const ring = `0 0 0 2px ${sliceHex}, 0 0 12px 2px ${sliceHex}66`;
+            effectiveBoxShadow = boxShadow ? `${ring}, ${boxShadow}` : ring;
+          }
           return (
             <button
               key={nid ?? i}
               onClick={() => setSelected(node)}
-              className={`absolute rounded-lg border ${borderColor} bg-zinc-900 text-left transition-colors duration-500 overflow-hidden ${isSelected ? 'shadow-sm' : ''} hover:border-blue-400`}
+              className={`absolute rounded-lg border ${borderColor} bg-zinc-900 text-left transition-[opacity,box-shadow,border-color] duration-200 overflow-hidden ${isSelected ? 'shadow-sm' : ''} hover:border-blue-400`}
               style={{
                 left: px(ln.x) - NODE_W / 2, top: py(ln.depth), width: NODE_W, height: NODE_H,
-                boxShadow,
+                boxShadow: effectiveBoxShadow,
+                opacity: cardDimmed ? 0.5 : 1,
               }}
             >
               {sliceHex && (
@@ -546,9 +603,12 @@ export default function PlanGraph({
               </span>
               {sliceId != null && sliceHex && (
                 <span
-                  className="absolute top-1 right-1.5 text-[9px] font-mono font-semibold px-1 rounded"
+                  role="button"
+                  tabIndex={0}
+                  className="absolute top-1 right-1.5 text-[9px] font-mono font-semibold px-1 rounded cursor-pointer hover:brightness-125"
                   style={{ color: sliceHex, backgroundColor: `${sliceHex}22`, border: `1px solid ${sliceHex}55` }}
-                  title={`slice ${sliceId}`}
+                  title={highlightSlice === sliceId ? `slice ${sliceId} — click to clear` : `slice ${sliceId} — click to isolate`}
+                  onClick={(e) => { e.stopPropagation(); toggleHighlight(sliceId); }}
                 >
                   s{sliceId}
                 </span>
@@ -602,7 +662,7 @@ export default function PlanGraph({
   );
 
   const detail = selected && (
-    <div className="mt-3 rounded border border-zinc-800 bg-zinc-900 p-3 text-xs">
+    <div ref={detailRef} className="mt-3 rounded border border-zinc-800 bg-zinc-900 p-3 text-xs">
       <div className="flex items-center justify-between mb-2">
         <span className="font-semibold text-zinc-200">{nodeLabel(selected)}</span>
         <button onClick={() => setSelected(null)} className="text-zinc-500 hover:text-zinc-300">×</button>
@@ -690,7 +750,13 @@ export default function PlanGraph({
   );
 
   const sidePanel = sliceSummaries && sliceSummaries.length > 0 && (
-    <SliceSummaryPanel slices={sliceSummaries} runTimeMs={runTimeMs ?? 0} estProgressPct={estProgressPct ?? null} />
+    <SliceSummaryPanel
+      slices={sliceSummaries}
+      runTimeMs={runTimeMs ?? 0}
+      estProgressPct={estProgressPct ?? null}
+      highlightSlice={highlightSlice}
+      onToggleHighlight={toggleHighlight}
+    />
   );
 
   if (isFullscreen) {
