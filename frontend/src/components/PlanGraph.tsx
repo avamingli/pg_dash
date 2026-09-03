@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Table2, GitMerge, Sigma, Share2, ArrowUpDown, Layers, Box,
-  ZoomIn, ZoomOut, Maximize2, RotateCcw, Expand, Minimize2, X,
+  Table2, GitMerge, Sigma, Share2, ArrowUpDown, Box, ListPlus,
+  ZoomIn, ZoomOut, Maximize2, RotateCcw, Expand, Minimize2, X, Sun, Moon,
   ScanSearch, FileSearch, Grid2x2, Rows3, Rows4, Crosshair, Dice5, FunctionSquare,
   List, Bookmark, RefreshCcw, Layers2, Globe, Hash, Repeat2, ListOrdered, Combine,
   AppWindow, Boxes, Fingerprint, Scissors, Users, Save, BookmarkCheck, SquareStack,
@@ -34,18 +34,58 @@ const PAD = 24;
 // hairline so it actually registers at this card size, but still thin
 // enough to stay in its own zone under the text stack.
 const PROGRESS_H = 6;
+// Right-shift applied to Append/MergeAppend/Sequence stacked children so
+// they visually indent from their parent, matching EXPLAIN-text style
+// (`Append / -> Seq Scan p1 / -> Seq Scan p2`). Also the gap width the
+// horizontal tick lines from the trunk into each child's left edge.
+const STACK_INDENT_PX = 40;
 
 interface LayoutNode {
   node: PlanNode;
   x: number; // leaf-order units, not pixels
   depth: number;
   children: LayoutNode[];
+  /** True when this node is a stacked child under an Append-family
+   * parent (see shouldStackChildren). Rendering shifts these cards
+   * right by STACK_INDENT_PX and connects them to the parent with a
+   * tree-view trunk + tick instead of the normal Bezier edge. */
+  stacked?: boolean;
+}
+
+// Node types whose children we prefer to stack vertically (EXPLAIN-text-
+// style list) instead of fanning out horizontally as normal tree
+// branches. Applies only when every child is a leaf — otherwise the
+// grandchildren would need their own leaf columns anyway and stacking
+// the parents on top of each other creates overlap. Partition scans
+// and UNION ALLs are the common triggers.
+const LIST_LIKE_NODE_TYPES = new Set(['Append', 'MergeAppend', 'Sequence']);
+function shouldStackChildren(node: PlanNode): boolean {
+  if (!LIST_LIKE_NODE_TYPES.has(node['Node Type'] ?? '')) return false;
+  const kids = node.Plans ?? [];
+  if (kids.length < 2) return false;
+  return kids.every(c => !c.Plans || c.Plans.length === 0);
 }
 
 function layoutTree(root: PlanNode): { layout: LayoutNode; leafCount: number; maxDepth: number } {
   let leafCounter = 0;
   let maxDepth = 0;
   function visit(node: PlanNode, depth: number): LayoutNode {
+    if (shouldStackChildren(node)) {
+      // Append-family with all-leaf children: give the parent one leaf
+      // column, then stack every child at that same x, incrementing
+      // depth by 1 each. Reads like EXPLAIN's "-> Append / -> Seq Scan
+      // p1 / -> Seq Scan p2 / ..." indented list, one row per child.
+      const parentX = leafCounter++;
+      const children: LayoutNode[] = (node.Plans ?? []).map((c, i) => ({
+        node: c,
+        x: parentX,
+        depth: depth + 1 + i,
+        children: [],
+        stacked: true,
+      }));
+      maxDepth = Math.max(maxDepth, depth + (node.Plans?.length ?? 0));
+      return { node, x: parentX, depth, children };
+    }
     maxDepth = Math.max(maxDepth, depth);
     const children = (node.Plans ?? []).map(c => visit(c, depth + 1));
     const x = children.length === 0
@@ -102,7 +142,11 @@ function nodeIcon(node: PlanNode) {
     case 'Memoize': return BookmarkCheck;
 
     // Combining sibling subplans
-    case 'Append': return Layers;
+    // Append concatenates rows from multiple inputs into one list —
+    // ListPlus (a list with a + at the bottom) reads that literally.
+    // Layers (three stacked planes) worked semantically but at small
+    // sizes looks too much like a database-cylinder glyph.
+    case 'Append': return ListPlus;
     case 'MergeAppend': return SquareStack;
     case 'Sequence': return Layers3;
 
@@ -202,6 +246,14 @@ interface PlanGraphProps {
 
 const ZOOM_MIN = 0.4;
 const ZOOM_MAX = 2;
+// Minimap in the canvas's bottom-right corner. Shows the full plan tree
+// scaled down + a rectangle over the currently-visible area; clicking
+// jumps the pan to center on that spot. Useful once the plan is big
+// enough to need scrolling around, invisible when the whole plan fits
+// on screen.
+const MINIMAP_W = 140;
+const MINIMAP_H = 96;
+const MINIMAP_PAD = 6;
 // A pointer that hasn't moved past this many px is still a click (opens the
 // node's detail panel), not a pan — otherwise a hand tremor while clicking
 // a node would fall through as a 1px drag instead.
@@ -211,6 +263,39 @@ export default function PlanGraph({
   root, rootTime, nodeIds, liveNodes, nodeStates, finished, maxHeight = 460,
   sliceSummaries, runTimeMs, estProgressPct,
 }: PlanGraphProps) {
+  // Toggle between the app's normal dark canvas and a light one meant
+  // for screenshots / thumbnails / video demos where the plan tree
+  // needs to read clearly at low zoom. Scoped to this graph panel only
+  // — the surrounding Watch panel / sidebar stay dark. Preference is
+  // persisted to localStorage so a picked mode survives page reloads
+  // (private-window / disabled-storage throws, hence the try/catch).
+  const [lightCanvas, setLightCanvas] = useState<boolean>(() => {
+    try { return localStorage.getItem('pg_dash.plangraph.lightCanvas') === '1'; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('pg_dash.plangraph.lightCanvas', lightCanvas ? '1' : '0'); }
+    catch { /* private window / storage disabled — silently ignore */ }
+  }, [lightCanvas]);
+  const t = lightCanvas ? {
+    canvas: 'bg-zinc-50',
+    card: 'bg-white',
+    cardBorderDefault: 'border-zinc-300',
+    textLabel: 'text-zinc-900',
+    textRelation: 'text-zinc-600',
+    textRows: 'text-emerald-700',
+    edgeStroke: '#94a3b8',
+    trunkStroke: '#94a3b8',
+  } : {
+    canvas: 'bg-zinc-950',
+    card: 'bg-zinc-900',
+    cardBorderDefault: 'border-zinc-700',
+    textLabel: 'text-zinc-100',
+    textRelation: 'text-zinc-400',
+    textRows: 'text-emerald-300',
+    edgeStroke: '#52525b',
+    trunkStroke: '#52525b',
+  };
   const [selected, setSelected] = useState<PlanNode | null>(null);
   const detailRef = useRef<HTMLDivElement>(null);
   // Auto-close the node detail panel on any mousedown outside it: clicking
@@ -243,12 +328,29 @@ export default function PlanGraph({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
+  // Live viewport size, tracked via ResizeObserver — fullscreen / window
+  // resize / sidebar collapse all change it, and the minimap needs it to
+  // draw the "you're looking at this part" rectangle in the right place.
+  const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
   const viewportRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const measure = () => setViewportSize({ w: el.clientWidth, h: el.clientHeight });
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isFullscreen]);
   const panRef = useRef<{ pointerId: number; startX: number; startY: number; panX: number; panY: number; moved: boolean } | null>(null);
   const { layout, leafCount, maxDepth } = useMemo(() => layoutTree(root), [root]);
   const allNodes = useMemo(() => flatten(layout), [layout]);
 
-  const width = leafCount * (NODE_W + H_GAP) - H_GAP + PAD * 2;
+  // Add STACK_INDENT_PX to the canvas width when any stacked child exists —
+  // those cards render shifted right and would otherwise clip off the
+  // rightmost column.
+  const hasStackedChild = useMemo(() => allNodes.some(ln => ln.stacked), [allNodes]);
+  const width = leafCount * (NODE_W + H_GAP) - H_GAP + PAD * 2 + (hasStackedChild ? STACK_INDENT_PX : 0);
   const height = (maxDepth + 1) * (NODE_H + V_GAP) - V_GAP + PAD * 2;
 
   const px = (x: number) => PAD + x * (NODE_W + H_GAP) + NODE_W / 2;
@@ -388,6 +490,13 @@ export default function PlanGraph({
         <RotateCcw size={13} />
       </button>
       <span className="w-px h-4 bg-zinc-800 mx-1" />
+      <button
+        onClick={() => setLightCanvas(v => !v)}
+        className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200"
+        title={lightCanvas ? 'Dark canvas' : 'Light canvas (better for screenshots / low zoom)'}
+      >
+        {lightCanvas ? <Moon size={13} /> : <Sun size={13} />}
+      </button>
       <button onClick={() => setIsFullscreen(v => !v)} className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200" title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Open in fullscreen'}>
         {isFullscreen ? <Minimize2 size={13} /> : <Expand size={13} />}
       </button>
@@ -401,7 +510,7 @@ export default function PlanGraph({
       onPointerMove={onPointerMove}
       onPointerUp={endPan}
       onPointerCancel={endPan}
-      className={`relative overflow-hidden rounded border border-zinc-800 bg-zinc-950 select-none ${isFullscreen ? 'flex-1 min-h-0' : ''} ${isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
+      className={`relative overflow-hidden rounded border border-zinc-800 ${t.canvas} select-none ${isFullscreen ? 'flex-1 min-h-0' : ''} ${isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
       style={{ height: isFullscreen ? undefined : maxHeight }}
     >
       {/* Content lives at its natural (unzoomed) size and is moved/scaled
@@ -419,10 +528,71 @@ export default function PlanGraph({
               <path d="M0,0 L10,5 L0,10 z" fill="#10b981" />
             </marker>
           </defs>
+          {/* Tree-view style trunk + tick lines for Append-family stacked
+              children. Vertical trunk drops from the parent's bottom-left
+              area down past every stacked child; a short horizontal tick
+              connects the trunk to each child's shifted left edge. Reads
+              like EXPLAIN's `-> Seq Scan p1 / -> Seq Scan p2` indented
+              list. Rendered before the normal edges so the Bezier arrows
+              overlay on top where they cross. */}
+          {allNodes.flatMap(ln => {
+            if (!shouldStackChildren(ln.node) || ln.children.length === 0) return [];
+            const trunkX = px(ln.x) - NODE_W / 2 + STACK_INDENT_PX / 2;
+            const trunkTop = py(ln.depth) + NODE_H;
+            const lastChild = ln.children[ln.children.length - 1];
+            const trunkBottom = py(lastChild.depth) + NODE_H / 2;
+            return [
+              <line
+                key={`trunk-${ln.node.Nid ?? ln.x}-${ln.depth}`}
+                x1={trunkX} y1={trunkTop} x2={trunkX} y2={trunkBottom}
+                stroke={t.trunkStroke} strokeWidth={1.5} strokeLinecap="round"
+              />,
+              ...ln.children.map((c, i) => {
+                const tickY = py(c.depth) + NODE_H / 2;
+                const tickX2 = px(c.x) - NODE_W / 2 + STACK_INDENT_PX;
+                // Animate the tick with the same marching-ants pattern
+                // regular edges use, so a still-producing partition scan
+                // reads as "data flowing up from this branch". Done
+                // children stay a plain static line — matches the "solid
+                // gray = quiet" convention elsewhere.
+                const childNid = c.node.Nid ?? nodeIds?.get(c.node);
+                const childLive = childNid != null ? liveNodes?.[childNid] : undefined;
+                const flowing = !finished && childLive?.growing === true;
+                const childSlice = c.node['Slice'];
+                const parentSlice = ln.node['Slice'];
+                const tickDimmed = highlightSlice != null
+                  && parentSlice !== highlightSlice
+                  && childSlice !== highlightSlice;
+                // Draw from child's edge → trunk, not the other way, so
+                // the marching-ants dashes (stroke-dashoffset animates
+                // negative, i.e. toward x2) flow right→left — matching
+                // "data streaming from this child up into Append".
+                return (
+                  <line
+                    key={`tick-${ln.node.Nid ?? ln.x}-${i}`}
+                    x1={tickX2} y1={tickY} x2={trunkX} y2={tickY}
+                    stroke={flowing ? '#10b981' : t.edgeStroke}
+                    strokeWidth={flowing ? 2 : 1.5}
+                    strokeLinecap="round"
+                    className={flowing ? 'pg-edge-flow' : undefined}
+                    style={{ opacity: tickDimmed ? 0.35 : 1, transition: 'opacity 200ms' }}
+                  />
+                );
+              }),
+            ];
+          })}
           {allNodes.flatMap(ln => ln.children.map((child, i) => {
-            const x1 = px(child.x), y1 = py(child.depth);
+            const childLeftShift = child.stacked ? STACK_INDENT_PX : 0;
+            const x1 = px(child.x) + childLeftShift, y1 = py(child.depth);
             const x2 = px(ln.x), y2 = py(ln.depth) + NODE_H;
             const midY = (y1 + y2) / 2;
+            // Stacked-list children (see shouldStackChildren in layoutTree)
+            // get the trunk + tick treatment drawn separately above, so
+            // skip the regular Bezier here. A normal single-child chain
+            // (Sort → Aggregate, Motion → its subtree) also has
+            // child.x === ln.x but must keep its edge — hence the parent
+            // check, not just an x-equality one.
+            if (shouldStackChildren(ln.node)) return null;
             // Data flows child -> parent (arrows point up, per this
             // component's own convention) — so an edge reads as "actively
             // moving" when its *child* end is a live, still-running node,
@@ -451,7 +621,7 @@ export default function PlanGraph({
                 key={`${ln.node.Nid ?? ln.x}-${i}`}
                 d={`M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`}
                 fill="none"
-                stroke={flowing ? '#10b981' : '#52525b'}
+                stroke={flowing ? '#10b981' : t.edgeStroke}
                 strokeWidth={flowing ? 2 : 1.5}
                 strokeLinecap="round"
                 className={flowing ? 'pg-edge-flow' : undefined}
@@ -539,9 +709,10 @@ export default function PlanGraph({
             <button
               key={nid ?? i}
               onClick={() => setSelected(node)}
-              className={`absolute rounded-lg border ${borderColor} bg-zinc-900 text-left transition-[opacity,box-shadow,border-color] duration-200 overflow-hidden ${isSelected ? 'shadow-sm' : ''} hover:border-blue-400`}
+              className={`absolute rounded-lg border ${borderColor} ${t.card} text-left transition-[opacity,box-shadow,border-color] duration-200 overflow-hidden ${isSelected ? 'shadow-sm' : ''} hover:border-blue-400`}
               style={{
-                left: px(ln.x) - NODE_W / 2, top: py(ln.depth), width: NODE_W, height: NODE_H,
+                left: px(ln.x) - NODE_W / 2 + (ln.stacked ? STACK_INDENT_PX : 0),
+                top: py(ln.depth), width: NODE_W, height: NODE_H,
                 boxShadow: effectiveBoxShadow,
                 opacity: cardDimmed ? 0.5 : 1,
               }}
@@ -621,18 +792,18 @@ export default function PlanGraph({
                   confined to the bottom strip, so text needs no
                   drop-shadow to fight a moving background. */}
               <div
-                className="relative text-[11px] font-semibold text-zinc-100 leading-snug break-words line-clamp-2 pl-7 pr-8 pt-1.5"
+                className={`relative text-[11px] font-semibold ${t.textLabel} leading-snug break-words line-clamp-2 pl-7 pr-8 pt-1.5`}
                 title={label}
               >
                 {label}
               </div>
               <div
-                className="relative pl-7 pr-2 text-[10px] text-zinc-400 truncate"
+                className={`relative pl-7 pr-2 text-[10px] ${t.textRelation} truncate`}
                 title={relation || undefined}
               >
                 {relation ? `on ${relation}` : ' '}
               </div>
-              <div className="relative pl-7 pr-2 text-[10px] font-mono flex items-center gap-1 text-emerald-300">
+              <div className={`relative pl-7 pr-2 text-[10px] font-mono flex items-center gap-1 ${t.textRows}`}>
                 {state === 'active' && (
                   <span className="w-1 h-1 rounded-full bg-emerald-400 inline-block shrink-0 animate-pulse" />
                 )}
@@ -658,6 +829,76 @@ export default function PlanGraph({
           );
         })}
       </div>
+      {(() => {
+        // Minimap. Only render once we know the viewport size AND the
+        // content actually overflows or is a candidate for panning; on a
+        // tiny plan that fits fully it just clutters. Threshold: content
+        // bigger than viewport in either axis by at least 20 px.
+        if (viewportSize.w <= 0 || viewportSize.h <= 0) return null;
+        const contentOverflows = width > viewportSize.w + 20 || height > viewportSize.h + 20;
+        if (!contentOverflows) return null;
+
+        const scale = Math.min(
+          (MINIMAP_W - MINIMAP_PAD * 2) / width,
+          (MINIMAP_H - MINIMAP_PAD * 2) / height,
+        );
+        const mx = (cx: number) => MINIMAP_PAD + cx * scale;
+        const my = (cy: number) => MINIMAP_PAD + cy * scale;
+        // Visible content region right now
+        const vpX = -pan.x / zoom;
+        const vpY = -pan.y / zoom;
+        const vpW = viewportSize.w / zoom;
+        const vpH = viewportSize.h / zoom;
+
+        const handleJump = (e: import('react').MouseEvent<SVGSVGElement>) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const clickMx = e.clientX - rect.left - MINIMAP_PAD;
+          const clickMy = e.clientY - rect.top - MINIMAP_PAD;
+          const cx = clickMx / scale;
+          const cy = clickMy / scale;
+          setPan({ x: viewportSize.w / 2 - cx * zoom, y: viewportSize.h / 2 - cy * zoom });
+        };
+
+        return (
+          <div
+            className={`absolute bottom-2 right-2 rounded border ${lightCanvas ? 'border-zinc-300 bg-white/95' : 'border-zinc-700 bg-zinc-900/95'} overflow-hidden shadow-lg`}
+            style={{ width: MINIMAP_W, height: MINIMAP_H }}
+            // Stop pan / click-outside handlers on the viewport from
+            // firing when the user interacts with the minimap.
+            onPointerDown={e => e.stopPropagation()}
+            onPointerMove={e => e.stopPropagation()}
+            onPointerUp={e => e.stopPropagation()}
+          >
+            <svg
+              width={MINIMAP_W}
+              height={MINIMAP_H}
+              onClick={handleJump}
+              style={{ cursor: 'pointer' }}
+            >
+              {allNodes.map((ln, i) => {
+                const cardLeft = px(ln.x) - NODE_W / 2 + (ln.stacked ? STACK_INDENT_PX : 0);
+                const cardTop = py(ln.depth);
+                const hex = sliceColor(ln.node['Slice']) ?? (lightCanvas ? '#94a3b8' : '#71717a');
+                return (
+                  <rect
+                    key={i}
+                    x={mx(cardLeft)} y={my(cardTop)}
+                    width={NODE_W * scale} height={NODE_H * scale}
+                    fill={hex} opacity={0.75} rx={1}
+                  />
+                );
+              })}
+              <rect
+                x={mx(vpX)} y={my(vpY)}
+                width={vpW * scale} height={vpH * scale}
+                fill="none"
+                stroke={lightCanvas ? '#0f172a' : '#f4f4f5'}
+                strokeWidth={1.5}
+              />
+            </svg>
+          </div>
+        );
+      })()}
     </div>
   );
 
