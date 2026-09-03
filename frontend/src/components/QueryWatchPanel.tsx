@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useCallback, useRef, type PointerEvent } from 'react';
-import { X, RefreshCw, AlertTriangle } from 'lucide-react';
+import { X, RefreshCw, AlertTriangle, Circle, Square, Download } from 'lucide-react';
 import { api } from '@/lib/api';
 import PlanViewer, { type LiveNodeStats } from '@/components/PlanViewer';
 import { useMetrics } from '@/contexts/MetricsContext';
@@ -8,7 +8,23 @@ import {
   buildRealPlanTree, computeSliceIds, sliceIdsByNid, advanceSliceTiming, summarizeSlices,
   estimateCompletionPct, computeNodeCompletionStates, computeCompletedSlices,
 } from '@/lib/planTree';
-import type { QueryProgressNode, QueryProgressPlanNode } from '@/types/metrics';
+import type { QueryProgress, QueryProgressNode, QueryProgressPlanNode } from '@/types/metrics';
+
+// One captured poll response, timestamped from the start of the recording.
+// A whole recording is these frames plus a bit of query/cluster metadata,
+// serialized as a JSON file that any other pg_dash instance can replay
+// without needing a live database — see docs/plan-replay.md (TODO).
+interface RecordedFrame {
+  tsMs: number;
+  progress: QueryProgress;
+}
+interface Recording {
+  version: 1;
+  query: string;
+  startedAt: string; // ISO
+  clusterInfo: { num_segments?: number; mode?: string };
+  frames: RecordedFrame[];
+}
 
 interface QueryWatchPanelProps {
   pid: number;
@@ -124,6 +140,58 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasRealPlan = !!realPlan && realPlan.length > 0;
 
+  // Snapshot recording: every /progress response gets appended to a ref
+  // while `recording` is on. Stopping (manually or auto on query end)
+  // freezes the frames; `hasRecording` gates the Download button. Using
+  // a ref for the toggle bit so poll's useCallback doesn't need
+  // `recording` in its deps (which would tear down and re-arm the
+  // interval on every start/stop, losing frames across the seam).
+  const [recording, setRecording] = useState(false);
+  const [hasRecording, setHasRecording] = useState(false);
+  const [frameCount, setFrameCount] = useState(0);
+  const recordingRef = useRef(false);
+  const framesRef = useRef<RecordedFrame[]>([]);
+  const recordStartRef = useRef<number>(0);
+  useEffect(() => { recordingRef.current = recording; }, [recording]);
+  const startRecording = () => {
+    framesRef.current = [];
+    setFrameCount(0);
+    recordStartRef.current = Date.now();
+    setHasRecording(false);
+    setRecording(true);
+  };
+  const stopRecording = () => {
+    setRecording(false);
+    setHasRecording(framesRef.current.length > 0);
+  };
+  // If the query finishes while a recording is on, freeze it — no more
+  // frames will ever arrive, and leaving the ⏺ button "hot" is confusing.
+  useEffect(() => {
+    if (finished && recordingRef.current) {
+      setRecording(false);
+      setHasRecording(framesRef.current.length > 0);
+    }
+  }, [finished]);
+  const downloadRecording = () => {
+    const rec: Recording = {
+      version: 1,
+      query: sql,
+      startedAt: new Date(recordStartRef.current).toISOString(),
+      clusterInfo: {
+        num_segments: clusterInfo?.num_segments,
+        mode: clusterInfo?.mode,
+      },
+      frames: framesRef.current,
+    };
+    const blob = new Blob([JSON.stringify(rec)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `plan-snapshot-${new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace(/Z$/, '')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   // Panel width, draggable from its left edge — the panel itself is
   // anchored to the right side of the screen (slides in from the right),
   // so dragging the handle left/right changes width, not position.
@@ -181,6 +249,19 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
     // that never had a tag (Activity Monitor's "watch that stranger").
     api.getQueryProgress(pid, tag ? { tag } : { sql })
       .then(progress => {
+        // Capture the raw response for snapshot recording before any
+        // processing — the frame is what a *live* consumer would have
+        // seen off the wire, which is what a replay needs to feed
+        // through the same aggregation/merge pipeline verbatim. Also
+        // capture the empty terminal frame below (helpful for a replay
+        // to know exactly when the query "ended").
+        if (recordingRef.current) {
+          framesRef.current.push({
+            tsMs: Date.now() - recordStartRef.current,
+            progress,
+          });
+          setFrameCount(framesRef.current.length);
+        }
         // The shmem slots this reads (whpg_plan_tree.instrument_detail /
         // whpg_plan_tree.plan_detail) recycle the instant the query's backend
         // resource owner releases — i.e. right as it finishes — so the
@@ -361,6 +442,40 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
               <span className="flex items-center gap-1.5 text-xs text-emerald-400">
                 <RefreshCw size={12} className="animate-spin" /> live
               </span>
+            )}
+            {/* Snapshot recording controls: ⏺ starts (or ⏹ stops)
+                capturing every /progress response into a JSON blob;
+                💾 downloads the frozen recording. The captured file
+                can be replayed in any pg_dash instance without needing
+                a live database — great for README demos, LinkedIn
+                posts, and bug repros. */}
+            {!recording && !finished && (
+              <button
+                onClick={startRecording}
+                className="flex items-center gap-1 px-2 py-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-red-400 transition-colors text-xs"
+                title="Start recording — captures every /progress response for offline replay"
+              >
+                <Circle size={11} /> Record
+              </button>
+            )}
+            {recording && (
+              <button
+                onClick={stopRecording}
+                className="flex items-center gap-1 px-2 py-1 rounded bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors text-xs"
+                title="Stop recording"
+              >
+                <Square size={10} fill="currentColor" />
+                <span className="tabular-nums">Recording · {frameCount} frames</span>
+              </button>
+            )}
+            {hasRecording && !recording && (
+              <button
+                onClick={downloadRecording}
+                className="flex items-center gap-1 px-2 py-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-emerald-300 transition-colors text-xs"
+                title={`Download ${frameCount} captured frames as JSON`}
+              >
+                <Download size={11} /> Save
+              </button>
             )}
             <button onClick={onClose} className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors" title="Close">
               <X size={14} />
