@@ -14,7 +14,8 @@ import type { QueryProgress, QueryProgressNode, QueryProgressPlanNode } from '@/
 // One captured poll response, timestamped from the start of the recording.
 // A whole recording is these frames plus a bit of query/cluster metadata,
 // serialized as a JSON file that any other pg_dash instance can replay
-// without needing a live database — see docs/plan-replay.md (TODO).
+// without needing a live database — see docs/plan-replay.md for the
+// full schema, aggregation-pipeline map, and Phase-2 replay design.
 interface RecordedFrame {
   tsMs: number;
   progress: QueryProgress;
