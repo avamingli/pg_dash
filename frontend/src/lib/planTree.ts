@@ -462,82 +462,49 @@ export function summarizeSlices(
 }
 
 /**
- * Which slices are "known completed" by topology inference. Two rules,
- * each targeting a different failure mode of the raw shmem signal:
+ * A slice is "known completed" (topology-inferred) when its own nodes
+ * agree: no node in the slice is currently `active`, AND at least one
+ * node in the slice has state `completed`.
  *
- * Rule 1 (root completed): a slice's *root* node is in state='completed'
- * — root = highest node inside the slice (a Motion, or the plan root
- * for slice 1). "Root completed" means data has already flowed past
- * this slice's sender to its consumer upstream. Ignoring lower leaves
- * matters: a Seq Scan inside slice N that fed a still-probing Hash Join
- * one level up reads 'completed' while slice N's root Motion is still
- * actively sending — treating that as done paints "slice N 100% ✓"
- * while its Motion is visibly still going.
+ * Why per-slice max, not root-only: a slice's root Motion is what tears
+ * down last, and its `state='completed'` signal (ancestor is growing)
+ * fires only in the narrow window when the parent slice happens to be
+ * emitting rows *this exact poll*. That window is easy to miss over an
+ * 800ms poll interval — the parent may grow between polls, or by the
+ * next poll the ancestor has plateaued and Motion falls back to `idle`.
+ * A lower node inside the slice (a Seq Scan whose parent HJ inside the
+ * same slice already grew) captures the "our subtree is done" fact
+ * more reliably: it flips to 'completed' as soon as its immediate
+ * parent starts producing, which happens far earlier in the slice's
+ * lifetime than the root Motion getting an ancestor-growing signal.
  *
- * Rule 2 (parent-slice moved): a slice was never observed producing
- * rows (missing from `seenActive`) but its *parent slice* has been
- * observed producing. In MPP a parent slice can't process anything
- * without input from its child slices, so if we've caught the parent
- * running and never caught this child in shmem, the child finished
- * faster than the 800ms poll interval could see. Small dim-table
- * slices are the classic case — they Seq Scan → Redistribute → EOS in
- * under a poll, leave no observable rows, but their consumer's Hash
- * Join is clearly hashing.
+ * The `no active` guard prevents the "slice 3 still running but sidebar
+ * says 100%" bug: if any node in the slice is currently 'active'
+ * (growing rows or subtreeGrew from below), the slice's gang has not
+ * fully wound down yet, so we must not call it done even if some other
+ * node in it has already completed.
+ *
+ * The `at least one completed` requirement blocks a query-start false
+ * positive: on the first poll everything is 'idle', which alone can't
+ * be distinguished from a truly finished slice.
  */
 export function computeCompletedSlices(
-  root: PlanNode | null,
   sliceIds: Map<PlanNode, number> | null,
   nodeStates: Record<number, NodeCompletionState>,
-  seenActive?: Set<number>,
 ): Set<number> {
   const done = new Set<number>();
-  if (!root || !sliceIds) return done;
-  // Walk once to collect each slice's root node + parent slice id.
-  // A slice root is any node whose slice id differs from its parent's
-  // (the plan root's parent slice is null, so it always qualifies).
-  const roots = new Map<number, { nid: number | undefined; parentSlice: number | null }>();
-  function visit(node: PlanNode, parentSlice: number | null) {
-    const sid = sliceIds!.get(node);
-    if (sid != null && sid !== parentSlice && !roots.has(sid)) {
-      roots.set(sid, { nid: node.Nid, parentSlice });
-    }
-    for (const c of node.Plans ?? []) visit(c, sid ?? parentSlice);
+  if (!sliceIds) return done;
+  const hasActive = new Set<number>();
+  const hasCompleted = new Set<number>();
+  for (const [node, sid] of sliceIds) {
+    const nid = node.Nid;
+    if (nid == null) continue;
+    const state = nodeStates[nid];
+    if (state === 'active') hasActive.add(sid);
+    else if (state === 'completed') hasCompleted.add(sid);
   }
-  visit(root, null);
-
-  for (const [sid, { nid, parentSlice }] of roots) {
-    // Rule 1: root state is 'completed' — an ancestor is currently
-    // growing, so we've definitely flushed upstream.
-    if (nid != null && nodeStates[nid] === 'completed') {
-      done.add(sid);
-      continue;
-    }
-    // Rule 2: our root Motion is NOT currently active (its state is
-    // 'idle', or absent), and *some* ancestor slice has been observed
-    // producing at any past poll. Walk the parent-slice chain — the
-    // immediate parent isn't enough, since a chain of small
-    // Motion-only slices (Broadcast above Redistribute above a fast
-    // Seq Scan) can all be never-observed themselves while a slice
-    // further up did move.
-    //
-    // Covers two failure modes of Rule 1:
-    //   (a) slice too fast to observe at all — state='idle' from the
-    //       start, never in seenActive
-    //   (b) slice was observed producing, then plateaued (Motion's
-    //       shmem slot lingers with the last rows count) — state
-    //       flips back to 'idle', ancestor-growing was never caught
-    //       in a single poll window
-    // Both cases: MPP guarantees a parent slice can't have received
-    // any rows without a child slice feeding it, so an observed
-    // ancestor proves this slice has already done its work.
-    const state = nid != null ? nodeStates[nid] : undefined;
-    if (seenActive && state !== 'active') {
-      let p = parentSlice;
-      while (p != null) {
-        if (seenActive.has(p)) { done.add(sid); break; }
-        p = roots.get(p)?.parentSlice ?? null;
-      }
-    }
+  for (const sid of hasCompleted) {
+    if (!hasActive.has(sid)) done.add(sid);
   }
   return done;
 }
