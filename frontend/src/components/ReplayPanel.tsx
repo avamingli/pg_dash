@@ -8,6 +8,13 @@ interface ReplayPanelProps {
   recording: Recording;
 }
 
+// 1x is the recorded wall clock. The others divide each frame's own gap,
+// which is the only thing speed touches: slice timing is folded from the
+// recorded timestamps (see replayRecording), so the numbers on screen at
+// frame N are the same at 4x as at 1x — only the wait between frames
+// changes.
+const SPEEDS = [0.5, 1, 2, 4] as const;
+
 /**
  * Replay driver for a captured Watch session. Folds the recording's
  * frames through the same pipeline the live panel runs and hands the
@@ -33,6 +40,7 @@ export default function ReplayPanel({ recording }: ReplayPanelProps) {
 
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(true);
+  const [speed, setSpeed] = useState<number>(1);
   const state = states[Math.min(index, lastIndex)];
 
   // Advance one frame at a time, waiting out the gap the frames
@@ -42,10 +50,10 @@ export default function ReplayPanel({ recording }: ReplayPanelProps) {
   // backgrounded mid-capture) replays with its real rhythm.
   useEffect(() => {
     if (!playing || index >= lastIndex) return;
-    const delay = states[index + 1].tsMs - states[index].tsMs;
+    const delay = (states[index + 1].tsMs - states[index].tsMs) / speed;
     const timer = setTimeout(() => setIndex(i => i + 1), Math.max(0, delay));
     return () => clearTimeout(timer);
-  }, [playing, index, lastIndex, states]);
+  }, [playing, index, lastIndex, states, speed]);
 
   const atEnd = index >= lastIndex;
   const restart = () => {
@@ -58,6 +66,15 @@ export default function ReplayPanel({ recording }: ReplayPanelProps) {
   const togglePlay = () => {
     if (atEnd) restart();
     else setPlaying(p => !p);
+  };
+  // Grabbing the scrub bar takes manual control — playback resuming
+  // under your fingers while you're comparing two frames is the whole
+  // reason you reached for the bar. ▶ picks it up again from wherever
+  // you left the cursor. Seeking is free (the state for every frame is
+  // already folded), so this is a plain index jump.
+  const scrubTo = (next: number) => {
+    setPlaying(false);
+    setIndex(Math.min(lastIndex, Math.max(0, next)));
   };
 
   return (
@@ -97,9 +114,36 @@ export default function ReplayPanel({ recording }: ReplayPanelProps) {
         >
           <SkipBack size={12} /> Restart
         </button>
-        <span className="text-[11px] text-zinc-500 tabular-nums">
+        <span className="text-[11px] text-zinc-500 tabular-nums shrink-0">
           Frame {state.frameIndex + 1}/{states.length} · {(state.tsMs / 1000).toFixed(1)}s
         </span>
+
+        <input
+          type="range"
+          min={0}
+          max={lastIndex}
+          step={1}
+          value={index}
+          onChange={e => scrubTo(Number(e.target.value))}
+          className="flex-1 h-1 accent-blue-500 cursor-pointer"
+          aria-label="Playback position"
+          title={`Frame ${state.frameIndex + 1} of ${states.length}`}
+        />
+
+        <div className="flex items-center gap-0.5 shrink-0" role="group" aria-label="Playback speed">
+          {SPEEDS.map(x => (
+            <button
+              key={x}
+              onClick={() => setSpeed(x)}
+              className={`px-1.5 py-0.5 rounded text-[11px] tabular-nums transition-colors ${
+                speed === x ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+              title={x === 1 ? 'Real time — the cadence the run was captured at' : `${x}x the recorded cadence`}
+            >
+              {x}x
+            </button>
+          ))}
+        </div>
       </div>
 
       <PlanPlayer {...state} segments={segments} />
