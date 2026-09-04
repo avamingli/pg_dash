@@ -245,6 +245,25 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
         // 404 = backend gone, i.e. the query finished (or was cancelled).
         // liveNodes/realPlan are deliberately left untouched here — they
         // keep showing the last snapshot until the user closes the panel.
+        //
+        // A recording has to learn about this too. The 404 is the usual
+        // way a watched query ends (the backend checks the pid is still
+        // alive before it ever reads shmem, so the "empty nodes" response
+        // above is the rarer path), and it is not a response — so without
+        // this the recording simply stops at the last live poll, and a
+        // replay of it runs to the end with every slice still "running".
+        // Write the ending as the same empty terminal frame the
+        // empty-nodes path records, which is what replayRecording already
+        // reads as "the query ended here". Only after a frame with rows:
+        // a 404 on the very first poll is a query we never saw at all.
+        if (recordingRef.current && framesRef.current.length > 0) {
+          const last = framesRef.current[framesRef.current.length - 1];
+          framesRef.current.push({
+            tsMs: Date.now() - recordStartRef.current,
+            progress: { pid, sess_id: last.progress.sess_id, nodes: [] },
+          });
+          setFrameCount(framesRef.current.length);
+        }
         setFinished(true);
         if (pollRef.current) clearInterval(pollRef.current);
       });
