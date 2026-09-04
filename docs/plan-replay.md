@@ -11,6 +11,14 @@ Handoff doc for **Phase 2 (replay)** of the Watch-panel snapshot feature. Phase 
 >
 > Still deferred: the sample gallery, sharing, editing, side-by-side compare.
 
+> **Follow-up shipped: the recording library.** Anything loaded on /replay is now kept in the browser (IndexedDB, `frontend/src/lib/recordingLibrary.ts`) and listed under the player, so a run can be re-analysed later without the file. Three things worth knowing:
+>
+> - It stores a **copy, not a link**. A picked `File` carries no path, so there is nothing durable to point at — only the File System Access API can hand back a re-openable handle, and that is Chromium-only. No loss either way: a recording is immutable once written, so a copy can't drift from the original, and it survives the JSON being moved, deleted, or left on another machine.
+> - Metadata and frames live in **two object stores** (`recording_meta`, `recording_data`), written in one transaction. Listing the library reads only the small rows; a long capture's frames are never deserialized to render a list.
+> - The **file name is the key**, so re-loading the same file updates its entry instead of stacking near-duplicates. Removing an entry deletes our copy and nothing else — the file it came from was never ours to touch — which is why the list says so and the trash button asks twice.
+>
+> Sharing is still deferred, and the shape above is what a server-side library would replace: swap the four `recordingLibrary` functions for REST calls and the page itself doesn't change.
+
 ## Why this exists
 
 Live visual plan progression is only visible while a query is running against a real MPP cluster. That makes it awkward for demos, README GIFs, LinkedIn posts, and bug repros — the moment you want to show is gone by the time you can screenshot it.
