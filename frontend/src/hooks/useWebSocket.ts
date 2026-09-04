@@ -16,13 +16,41 @@ export function useWebSocket({ url, onMessage }: UseWebSocketOptions) {
   const reconnectDelayRef = useRef(1000);
   const mountedRef = useRef(true);
 
-  // Keep onMessage in a ref so reconnection always uses the latest callback.
+  // Keep onMessage and url in refs so a reconnect always uses the latest
+  // values without connect() having to depend on them — depending on
+  // them would tear the socket down and re-open it on every render of
+  // whichever component passed the callback.
+  //
+  // Updated in an effect rather than during render. Both are read only
+  // from async callbacks (socket events, the reconnect timer), which
+  // can't run before this commit's effects have flushed, and the effect
+  // is declared ahead of the connecting one so the URL is current by the
+  // time connect() runs. It also keeps the old URL visible to the
+  // connect effect's *cleanup*, which needs it to decrement the refcount
+  // of the socket it actually opened — a render-time write would have it
+  // release the entry for the new URL instead.
   const onMessageRef = useRef(onMessage);
-  onMessageRef.current = onMessage;
-
-  // Store url in a ref so connect/reconnect always use the latest value.
   const urlRef = useRef(url);
-  urlRef.current = url;
+  useEffect(() => {
+    onMessageRef.current = onMessage;
+    urlRef.current = url;
+  }, [onMessage, url]);
+
+  // connect and scheduleReconnect call each other, so one of them has to
+  // be referenced before it exists. Routing the back-edge through a ref
+  // breaks the cycle: both stay stable ([] deps), and the reconnect timer
+  // reads the current connect only when it actually fires — long after
+  // mount, since nothing schedules a reconnect until a socket closes.
+  const connectRef = useRef<() => void>(() => {});
+
+  const scheduleReconnect = useCallback(() => {
+    if (!mountedRef.current) return;
+    const delay = reconnectDelayRef.current;
+    reconnectDelayRef.current = Math.min(delay * 1.5, 10_000);
+    reconnectTimerRef.current = setTimeout(() => {
+      connectRef.current();
+    }, delay);
+  }, []);
 
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
@@ -89,19 +117,21 @@ export function useWebSocket({ url, onMessage }: UseWebSocketOptions) {
         // ignore non-JSON messages
       }
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scheduleReconnect]);
 
-  const scheduleReconnect = useCallback(() => {
-    if (!mountedRef.current) return;
-    const delay = reconnectDelayRef.current;
-    reconnectDelayRef.current = Math.min(delay * 1.5, 10_000);
-    reconnectTimerRef.current = setTimeout(() => {
-      connect();
-    }, delay);
+  useEffect(() => {
+    connectRef.current = connect;
   }, [connect]);
 
   useEffect(() => {
     mountedRef.current = true;
+    // The one synchronous setState reachable from here is connect()'s
+    // "the shared socket for this URL is already OPEN" branch — a socket
+    // that will never fire onopen again, so its state has to be adopted
+    // at subscribe time. That is the external-store case the rule's own
+    // guidance carves out, and removing it properly means rewriting this
+    // hook on useSyncExternalStore, not moving the call.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     connect();
 
     return () => {

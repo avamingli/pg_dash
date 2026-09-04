@@ -1,29 +1,6 @@
-import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
+import { useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { api } from '@/lib/api';
-
-interface AuthContextValue {
-  token: string | null;
-  user: string | null;
-  isAuthenticated: boolean;
-  isLoading: boolean;
-  authRequired: boolean;
-  login: (username: string, password: string) => Promise<void>;
-  logout: () => void;
-}
-
-const AuthContext = createContext<AuthContextValue>({
-  token: null,
-  user: null,
-  isAuthenticated: false,
-  isLoading: true,
-  authRequired: false,
-  login: async () => {},
-  logout: () => {},
-});
-
-export function useAuth() {
-  return useContext(AuthContext);
-}
+import { AuthContext } from '@/contexts/auth';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   // Restore token & user from sessionStorage on mount (survives page refresh)

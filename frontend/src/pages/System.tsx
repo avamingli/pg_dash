@@ -4,8 +4,8 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Cell,
 } from 'recharts';
 import { Cpu, MemoryStick, HardDrive, Network, Server } from 'lucide-react';
-import { useMetrics } from '@/contexts/MetricsContext';
-import { formatBytes, formatPercent } from '@/lib/utils';
+import { useMetrics } from '@/contexts/metrics';
+import { formatBytes, formatPercent, tooltipFormatter } from '@/lib/utils';
 import StatCard from '@/components/StatCard';
 
 // ── chart theme (matches Overview) ──
@@ -120,7 +120,7 @@ export default function System() {
                 <CartesianGrid {...GRID} />
                 <XAxis dataKey="time" {...AXIS} />
                 <YAxis {...AXIS} domain={[0, 100]} tickFormatter={v => `${v}%`} />
-                <Tooltip {...TT_STYLE} formatter={(v: number) => `${v.toFixed(1)}%`} />
+                <Tooltip {...TT_STYLE} formatter={tooltipFormatter(v => `${v.toFixed(1)}%`)} />
                 <Legend iconSize={10} wrapperStyle={{ fontSize: 11, color: '#a1a1aa' }} />
                 <Area type="monotone" dataKey="user" name="User" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.3} stackId="1" />
                 <Area type="monotone" dataKey="system" name="System" stroke="#a855f7" fill="#a855f7" fillOpacity={0.3} stackId="1" />
@@ -136,7 +136,7 @@ export default function System() {
                 <CartesianGrid {...GRID} />
                 <XAxis type="number" {...AXIS} domain={[0, 100]} tickFormatter={v => `${v}%`} />
                 <YAxis type="category" dataKey="name" {...AXIS} width={30} />
-                <Tooltip {...TT_STYLE} formatter={(v: number) => `${v.toFixed(1)}%`} />
+                <Tooltip {...TT_STYLE} formatter={tooltipFormatter(v => `${v.toFixed(1)}%`)} />
                 <Bar dataKey="usage" name="Usage" radius={[0, 4, 4, 0]}>
                   {perCoreData.map((entry, i) => (
                     <Cell key={i} fill={entry.usage > 80 ? '#ef4444' : entry.usage > 50 ? '#f59e0b' : '#3b82f6'} fillOpacity={0.7} />
@@ -192,7 +192,7 @@ export default function System() {
               <CartesianGrid {...GRID} />
               <XAxis dataKey="time" {...AXIS} />
               <YAxis {...AXIS} tickFormatter={v => `${v.toFixed(0)}G`} />
-              <Tooltip {...TT_STYLE} formatter={(v: number) => `${v.toFixed(2)} GB`} />
+              <Tooltip {...TT_STYLE} formatter={tooltipFormatter(v => `${v.toFixed(2)} GB`)} />
               <Legend iconSize={10} wrapperStyle={{ fontSize: 11, color: '#a1a1aa' }} />
               <Area type="monotone" dataKey="used" name="Used" stroke="#ef4444" fill="#ef4444" fillOpacity={0.3} stackId="1" />
               <Area type="monotone" dataKey="buffers" name="Buffers" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.3} stackId="1" />
@@ -237,7 +237,7 @@ export default function System() {
                 <CartesianGrid {...GRID} />
                 <XAxis dataKey="time" {...AXIS} />
                 <YAxis {...AXIS} tickFormatter={v => `${v.toFixed(0)}`} />
-                <Tooltip {...TT_STYLE} formatter={(v: number) => `${v.toFixed(2)} MB/s`} />
+                <Tooltip {...TT_STYLE} formatter={tooltipFormatter(v => `${v.toFixed(2)} MB/s`)} />
                 <Legend iconSize={10} wrapperStyle={{ fontSize: 11, color: '#a1a1aa' }} />
                 <Line type="monotone" dataKey="read_mbps" name="Read MB/s" stroke="#22c55e" dot={false} strokeWidth={1.5} />
                 <Line type="monotone" dataKey="write_mbps" name="Write MB/s" stroke="#f59e0b" dot={false} strokeWidth={1.5} />
@@ -251,7 +251,7 @@ export default function System() {
                 <CartesianGrid {...GRID} />
                 <XAxis dataKey="time" {...AXIS} />
                 <YAxis {...AXIS} />
-                <Tooltip {...TT_STYLE} formatter={(v: number) => `${v.toFixed(0)} IOPS`} />
+                <Tooltip {...TT_STYLE} formatter={tooltipFormatter(v => `${v.toFixed(0)} IOPS`)} />
                 <Legend iconSize={10} wrapperStyle={{ fontSize: 11, color: '#a1a1aa' }} />
                 <Line type="monotone" dataKey="read_iops" name="Read IOPS" stroke="#22c55e" dot={false} strokeWidth={1.5} />
                 <Line type="monotone" dataKey="write_iops" name="Write IOPS" stroke="#f59e0b" dot={false} strokeWidth={1.5} />
@@ -309,7 +309,7 @@ export default function System() {
               <CartesianGrid {...GRID} />
               <XAxis dataKey="time" {...AXIS} />
               <YAxis {...AXIS} tickFormatter={v => `${v.toFixed(0)}`} />
-              <Tooltip {...TT_STYLE} formatter={(v: number) => `${v.toFixed(2)} MB/s`} />
+              <Tooltip {...TT_STYLE} formatter={tooltipFormatter(v => `${v.toFixed(2)} MB/s`)} />
               <Legend iconSize={10} wrapperStyle={{ fontSize: 11, color: '#a1a1aa' }} />
               <Line type="monotone" dataKey="recv_mbps" name="Recv MB/s" stroke="#22c55e" dot={false} strokeWidth={1.5} />
               <Line type="monotone" dataKey="send_mbps" name="Send MB/s" stroke="#3b82f6" dot={false} strokeWidth={1.5} />

@@ -4,8 +4,8 @@ import {
 } from 'recharts';
 import { HardDrive, RefreshCw } from 'lucide-react';
 import { api } from '@/lib/api';
-import { useMetrics } from '@/contexts/MetricsContext';
-import { formatBytes } from '@/lib/utils';
+import { useMetrics } from '@/contexts/metrics';
+import { formatBytes, tooltipFormatter } from '@/lib/utils';
 import type { DatabaseStats, DiskUsage } from '@/types/metrics';
 
 const TT_STYLE = {
@@ -123,7 +123,7 @@ export default function Storage() {
               <CartesianGrid stroke="#27272a" strokeDasharray="3 3" horizontal={false} />
               <XAxis type="number" stroke="#3f3f46" fontSize={11} tick={{ fill: '#71717a' }} tickFormatter={v => formatBytes(v)} />
               <YAxis type="category" dataKey="name" stroke="#3f3f46" fontSize={11} tick={{ fill: '#a1a1aa' }} width={75} />
-              <Tooltip {...TT_STYLE} formatter={(v: number) => formatBytes(v)} />
+              <Tooltip {...TT_STYLE} formatter={tooltipFormatter(formatBytes)} />
               <Bar dataKey="size" name="Size" fill="#3b82f6" radius={[0, 4, 4, 0]} />
             </BarChart>
           </ResponsiveContainer>

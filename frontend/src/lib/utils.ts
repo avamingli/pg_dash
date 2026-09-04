@@ -13,6 +13,19 @@ export function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
+/**
+ * Adapt a plain number formatter to a recharts `<Tooltip formatter>`.
+ *
+ * Recharts types the hovered value as possibly undefined — a series can
+ * have a gap at that x — so a bare `(v: number) => string` doesn't
+ * type-check against the prop. Wrapping keeps each chart's formatter a
+ * plain number function and renders a gap as an em dash instead of
+ * "NaN" or a crash in `toFixed`.
+ */
+export function tooltipFormatter(format: (value: number) => string) {
+  return (value: number | undefined) => (typeof value === 'number' ? format(value) : '—');
+}
+
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms.toFixed(0)}ms`;
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;

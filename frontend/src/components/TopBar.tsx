@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Database, Bell, Eye, EyeOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
-import { useMetrics } from '@/contexts/MetricsContext';
+import { useMetrics } from '@/contexts/metrics';
 import type { ServerInfo } from '@/types/metrics';
 
 export default function TopBar() {

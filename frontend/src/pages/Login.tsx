@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Database, Loader2 } from 'lucide-react';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuth } from '@/contexts/auth';
 
 export default function Login() {
   const { login } = useAuth();

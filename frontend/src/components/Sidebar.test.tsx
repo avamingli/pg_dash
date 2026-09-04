@@ -4,7 +4,7 @@ import { BrowserRouter } from 'react-router-dom';
 import Sidebar from './Sidebar';
 
 const useMetrics = vi.fn();
-vi.mock('@/contexts/MetricsContext', () => ({
+vi.mock('@/contexts/metrics', () => ({
   useMetrics: () => useMetrics(),
 }));
 

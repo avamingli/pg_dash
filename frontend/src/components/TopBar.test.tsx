@@ -8,7 +8,7 @@ import TopBar from './TopBar';
 // check what the version text actually says once revealed, without also
 // having to click the toggle first in every one of them.
 const toggleVersionDetails = vi.fn();
-vi.mock('@/contexts/MetricsContext', () => ({
+vi.mock('@/contexts/metrics', () => ({
   useMetrics: () => ({
     connected: true,
     latest: {

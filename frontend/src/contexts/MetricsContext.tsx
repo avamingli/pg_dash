@@ -1,43 +1,10 @@
-import { createContext, useContext, useState, useCallback, useEffect, useRef, useMemo, type ReactNode } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo, type ReactNode } from 'react';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { api } from '@/lib/api';
 import type { MetricsSnapshot, ClusterInfo } from '@/types/metrics';
+import { MetricsContext } from '@/contexts/metrics';
 
 const MAX_HISTORY = 300; // 10 min at 2s intervals
-
-interface MetricsContextValue {
-  latest: MetricsSnapshot | null;
-  history: MetricsSnapshot[];
-  connected: boolean;
-  send: (data: unknown) => void;
-  clusterInfo: ClusterInfo | null;
-  queryMetricsAvailable: boolean;
-  // Live query plan tree requires both this AND queryMetricsAvailable —
-  // see ServerInfo.real_plan_shmem_available.
-  realPlanShmemAvailable: boolean;
-  // Whether the exact build/version string (server version, product
-  // version, segment count) is shown in the UI. Off by default so a
-  // screen share doesn't leak build details; toggled by clicking the
-  // logo in Sidebar.
-  showVersionDetails: boolean;
-  toggleVersionDetails: () => void;
-}
-
-const MetricsContext = createContext<MetricsContextValue>({
-  latest: null,
-  history: [],
-  connected: false,
-  send: () => {},
-  clusterInfo: null,
-  queryMetricsAvailable: false,
-  realPlanShmemAvailable: false,
-  showVersionDetails: false,
-  toggleVersionDetails: () => {},
-});
-
-export function useMetrics() {
-  return useContext(MetricsContext);
-}
 
 interface MetricsProviderProps {
   children: ReactNode;

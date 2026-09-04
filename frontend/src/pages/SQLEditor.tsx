@@ -4,7 +4,7 @@ import {
   ChevronLeft, ChevronRight, Plus, X, Shield, ShieldOff, Database, Eye, XCircle,
 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { useMetrics } from '@/contexts/MetricsContext';
+import { useMetrics } from '@/contexts/metrics';
 import type { QueryResult } from '@/types/metrics';
 import PlanViewer from '@/components/PlanViewer';
 import QueryWatchPanel from '@/components/QueryWatchPanel';
@@ -98,9 +98,11 @@ export default function SQLEditor() {
 
   const activeTab = tabs.find(t => t.id === activeTabId) ?? tabs[0];
 
-  function updateTab(id: number, patch: Partial<QueryTab>) {
+  // Stable so the callbacks that patch a tab (execute, startPidDiscovery)
+  // can depend on it without being rebuilt on every keystroke.
+  const updateTab = useCallback((id: number, patch: Partial<QueryTab>) => {
     setTabs(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t));
-  }
+  }, []);
 
   function updateSQL(sql: string) {
     updateTab(activeTabId, { sql });
@@ -131,7 +133,7 @@ export default function SQLEditor() {
   // SQL. Gives up after ~4.5s — fast queries just won't get a Watch
   // shortcut, which is fine, there's nothing to watch by the time we'd
   // find it anyway.
-  function startPidDiscovery(tabId: number, tag: string) {
+  const startPidDiscovery = useCallback((tabId: number, tag: string) => {
     if (pidPollRefs.current[tabId]) clearInterval(pidPollRefs.current[tabId]);
     updateTab(tabId, { watchPid: null, watchQueryStart: null, watchTag: tag });
     const wantAppName = appNameFor(tag);
@@ -156,11 +158,14 @@ export default function SQLEditor() {
     };
     poll();
     pidPollRefs.current[tabId] = setInterval(poll, 300);
-  }
+  }, [updateTab]);
 
   useEffect(() => {
+    // The ref's object is mutated in place and never reassigned, so
+    // capturing it here is the same object the cleanup needs to drain.
+    const timers = pidPollRefs.current;
     return () => {
-      Object.values(pidPollRefs.current).forEach(clearInterval);
+      Object.values(timers).forEach(clearInterval);
     };
   }, []);
 
@@ -217,7 +222,7 @@ export default function SQLEditor() {
       // off `running` too, so it still disappears correctly on its own.
       updateTab(tabId, { running: false });
     }
-  }, [activeTabId, tabs, explain, readOnly, database, canWatchQueries]);
+  }, [activeTabId, tabs, explain, readOnly, database, updateTab, startPidDiscovery]);
 
   // Sends pg_cancel_backend at the discovered pid — the same endpoint
   // Activity Monitor's own Cancel action uses. This aborts the query

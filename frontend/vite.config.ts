@@ -4,7 +4,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(() => {
   // In dev mode, read backend port from BACKEND_PORT env (set by root Makefile),
   // falling back to VITE_API_URL in .env, then to 4001.
   const backendPort = process.env.BACKEND_PORT || '4001'

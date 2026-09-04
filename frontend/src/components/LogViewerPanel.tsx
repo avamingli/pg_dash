@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { X, RefreshCw } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { LogEntry } from '@/types/metrics';
@@ -17,19 +17,26 @@ const severityColors: Record<string, string> = {
 
 export default function LogViewerPanel({ severity, onClose }: LogViewerPanelProps) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Reload counter, bumped by the refresh button. Combined with the
+  // severity it names the request currently wanted; `loadedKey` names
+  // the one `entries` actually holds, so "loading" is derived rather
+  // than flipped by hand at the top of the effect.
+  const [reloads, setReloads] = useState(0);
+  const requestKey = `${reloads}:${severity ?? ''}`;
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const loading = loadedKey !== requestKey;
 
-  const fetchEntries = useCallback(() => {
-    setLoading(true);
-    api.getLogEntries(severity, 200)
-      .then(d => setEntries(d ?? []))
-      .catch(() => setEntries([]))
-      .finally(() => setLoading(false));
-  }, [severity]);
-
+  // `cancelled` keeps a superseded response from landing after a newer
+  // one — switching severities twice in quick succession would otherwise
+  // leave whichever request happened to be slowest on screen.
   useEffect(() => {
-    fetchEntries();
-  }, [fetchEntries]);
+    let cancelled = false;
+    api.getLogEntries(severity, 200)
+      .then(d => { if (!cancelled) setEntries(d ?? []); })
+      .catch(() => { if (!cancelled) setEntries([]); })
+      .finally(() => { if (!cancelled) setLoadedKey(requestKey); });
+    return () => { cancelled = true; };
+  }, [severity, requestKey]);
 
   // Close on Escape key
   useEffect(() => {
@@ -54,7 +61,7 @@ export default function LogViewerPanel({ severity, onClose }: LogViewerPanelProp
           <h2 className="text-sm font-semibold text-zinc-200">{title}</h2>
           <div className="flex items-center gap-2">
             <button
-              onClick={fetchEntries}
+              onClick={() => setReloads(n => n + 1)}
               className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors"
               title="Refresh"
             >

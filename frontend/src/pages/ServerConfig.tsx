@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { Settings, Search, AlertTriangle, RefreshCw, Info } from 'lucide-react';
 import { api } from '@/lib/api';
-import { useMetrics } from '@/contexts/MetricsContext';
+import { useMetrics } from '@/contexts/metrics';
 import type { PGConfigEntry } from '@/types/metrics';
 import { formatBytes } from '@/lib/utils';
 

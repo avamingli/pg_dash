@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { useState, useMemo } from 'react';
 import { cn } from '@/lib/utils';
-import { useMetrics } from '@/contexts/MetricsContext';
+import { useMetrics } from '@/contexts/metrics';
 import warehousePgIcon from '@/assets/warehousepg-icon.png';
 
 const baseNavItems = [

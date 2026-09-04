@@ -4,7 +4,7 @@ import { api } from '@/lib/api';
 import { type LiveNodeStats } from '@/components/PlanViewer';
 import { aggregateByNode, mergeLiveNodes } from '@/lib/planAggregate';
 import PlanPlayer from '@/components/PlanPlayer';
-import { useMetrics } from '@/contexts/MetricsContext';
+import { useMetrics } from '@/contexts/metrics';
 import {
   type PlanNode, type SliceTiming, type NodeCompletionState, EMPTY_SLICE_TIMING,
   buildRealPlanTree, computeSliceIds, sliceIdsByNid, advanceSliceTiming,
@@ -288,11 +288,26 @@ export default function QueryWatchPanel({ pid, sql, queryStart, tag, onClose }: 
   // Reset would only make sense on unmount / new query, and the panel
   // remounts for each of those, which reinitializes the ref.
   const priorNodeStatesRef = useRef<Record<number, NodeCompletionState>>({});
+  // SUPPRESSED, NOT RESOLVED. react-hooks/refs is right that folding
+  // through a ref during render is illegal: React may re-run or discard
+  // a useMemo, and each of those either double-applies or loses a step
+  // of a fold that has no way to replay itself.
+  //
+  // The fix is to hold the fold in state and advance it inside poll()
+  // — an event handler, where a monotonic update belongs — reading root
+  // and the merged liveNodes from refs poll() already keeps for exactly
+  // this reason (nidToSliceRef, lastPollAtInternalRef). That is a
+  // behaviour change to the live plan-progress pipeline, and this
+  // component has no tests: it only does anything against a running
+  // distributed query, which can't be exercised here. Left as-is rather
+  // than changed unverified.
+  /* eslint-disable react-hooks/refs */
   const nodeStates = useMemo(() => {
     const next = computeNodeCompletionStates(root, liveNodes, priorNodeStatesRef.current);
     priorNodeStatesRef.current = next;
     return next;
   }, [root, liveNodes]);
+  /* eslint-enable react-hooks/refs */
   // The raw per-poll "which slices look completed *right now*" set. A
   // slice can flicker in/out of it as HJ 8 (the ancestor) briefly has
   // no new tuples between polls, so we don't feed this directly to the

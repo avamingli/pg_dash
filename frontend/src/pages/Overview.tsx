@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useState, useCallback } from 'react';
+import { useMemo, useEffect, useState } from 'react';
 import {
   LineChart, Line, AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
@@ -6,12 +6,13 @@ import {
 import {
   Users, Zap, Database, Cpu, HardDrive, TrendingUp, AlertTriangle, Server, RefreshCw, Shield,
 } from 'lucide-react';
-import { useMetrics } from '@/contexts/MetricsContext';
+import { useMetrics } from '@/contexts/metrics';
 import { api } from '@/lib/api';
 import { formatBytes, formatPercent } from '@/lib/utils';
 import StatCard from '@/components/StatCard';
 import LogViewerPanel from '@/components/LogViewerPanel';
-import TimeRangeSelector, { type TimeRange, timeRangeToISO } from '@/components/TimeRangeSelector';
+import TimeRangeSelector from '@/components/TimeRangeSelector';
+import { type TimeRange, timeRangeToISO } from '@/lib/timeRange';
 import type { MetricsSnapshot } from '@/types/metrics';
 
 // ── helpers ──
@@ -62,21 +63,23 @@ export default function Overview() {
     return () => clearInterval(id);
   }, []);
 
-  // Fetch historical snapshots when time range changes
-  const fetchHistorical = useCallback(() => {
-    const range = timeRangeToISO(timeRange);
-    if (!range) {
-      setHistoricalSnapshots([]);
-      return;
-    }
-    api.getSnapshots(range.from, range.to)
-      .then(d => setHistoricalSnapshots(d ?? []))
-      .catch(() => setHistoricalSnapshots([]));
-  }, [timeRange]);
-
+  // Fetch historical snapshots when time range changes.
+  //
+  // 'realtime' needs no fetch and no clearing: dataSource reads `history`
+  // in that mode, so a stale historicalSnapshots is never displayed.
+  //
+  // `cancelled` drops a response whose range the user has already moved
+  // on from — without it, switching 7d → 1h can leave the slower 7d
+  // response landing last and overwriting the 1h data.
   useEffect(() => {
-    fetchHistorical();
-  }, [fetchHistorical]);
+    const range = timeRangeToISO(timeRange);
+    if (!range) return;
+    let cancelled = false;
+    api.getSnapshots(range.from, range.to)
+      .then(d => { if (!cancelled) setHistoricalSnapshots(d ?? []); })
+      .catch(() => { if (!cancelled) setHistoricalSnapshots([]); });
+    return () => { cancelled = true; };
+  }, [timeRange]);
 
   // Use historical data or real-time data based on selector
   const dataSource = timeRange === 'realtime' ? history : historicalSnapshots;

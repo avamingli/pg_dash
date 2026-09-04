@@ -75,7 +75,10 @@ export default function Locks() {
             <ResponsiveContainer width="100%" height={200}>
               <PieChart>
                 <Pie data={locksData.summary} dataKey="count" nameKey="mode" cx="50%" cy="50%" outerRadius={75} innerRadius={40}
-                  paddingAngle={2} label={(props) => `${(props as any).mode}: ${(props as any).count}`} labelLine={{ stroke: '#71717a' }} fontSize={10}>
+                  paddingAngle={2} labelLine={{ stroke: '#71717a' }} fontSize={10}
+                  // name/value are the nameKey/dataKey fields recharts
+                  // resolves for us — no need to reach into the datum.
+                  label={({ name, value }) => `${name}: ${value}`}>
                   {locksData.summary.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
                 </Pie>
                 <Tooltip {...TT_STYLE} />

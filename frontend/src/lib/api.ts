@@ -28,9 +28,43 @@ import type {
 
 const BASE_URL = import.meta.env.VITE_API_URL || '';
 
+// ── Auth token ──
+// Auth is optional (Config.AuthEnabled on the backend), so everything
+// here is a no-op until someone actually logs in and stores a token.
+//
+// sessionStorage rather than localStorage: a JWT shouldn't outlive the
+// browser session. Reads and writes are wrapped because storage access
+// *throws* — rather than returning null — under some privacy settings,
+// and losing the token is far better than the whole client failing.
+const TOKEN_KEY = 'pg_dash.auth.token';
+const USER_KEY = 'pg_dash.auth.user';
+
+let unauthorizedHandler: (() => void) | null = null;
+
+function readStored(key: string): string | null {
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStored(key: string, value: string | null): void {
+  try {
+    if (value === null) sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, value);
+  } catch {
+    // Nothing to do: the session simply won't survive a reload.
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = readStored(TOKEN_KEY);
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    // Only sent when a token is actually held — with auth disabled the
+    // backend mounts no auth middleware and every request is anonymous.
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(options?.headers as Record<string, string>),
   };
 
@@ -40,6 +74,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   });
 
   if (!res.ok) {
+    // A 401 means the token we sent is expired or revoked. Report it
+    // once, centrally, so the session can be cleared and the login page
+    // shown — otherwise every caller renders its own "HTTP 401".
+    if (res.status === 401) unauthorizedHandler?.();
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || `HTTP ${res.status}`);
   }
@@ -49,6 +87,14 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   baseUrl: BASE_URL,
+
+  // Auth — the stored session AuthContext drives. `null` clears.
+  getToken: () => readStored(TOKEN_KEY),
+  setToken: (token: string | null) => writeStored(TOKEN_KEY, token),
+  getUser: () => readStored(USER_KEY),
+  setUser: (user: string | null) => writeStored(USER_KEY, user),
+  /** Register the 401 handler, or pass null to unregister it. */
+  onUnauthorized: (handler: (() => void) | null) => { unauthorizedHandler = handler; },
 
   // Health
   getHealth: () => request<{ status: string }>('/api/health'),

@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { useMetrics } from '@/contexts/MetricsContext';
+import { useMetrics } from '@/contexts/metrics';
 
 export default function StatusBar() {
   const { latest, connected } = useMetrics();

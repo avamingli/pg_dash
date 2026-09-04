@@ -5,13 +5,12 @@ import {
 import {
   Server, ShieldCheck, RefreshCw,
 } from 'lucide-react';
-import { useMetrics } from '@/contexts/MetricsContext';
+import { useMetrics } from '@/contexts/metrics';
 import { api } from '@/lib/api';
-import { cn } from '@/lib/utils';
-import { formatBytes } from '@/lib/utils';
+import { cn, formatBytes, tooltipFormatter } from '@/lib/utils';
 import StatCard from '@/components/StatCard';
 import type {
-  SegmentInfo, ConfigHistoryEntry, ResourceQueueStatus,
+  ClusterInfo, SegmentInfo, ConfigHistoryEntry, ResourceQueueStatus,
   ResourceGroupStatus, PerSegmentStats, WorkfileUsage,
 } from '@/types/metrics';
 
@@ -29,11 +28,15 @@ export default function Cluster() {
   const [workfiles, setWorkfiles] = useState<WorkfileUsage[]>([]);
   const [dataSkew, setDataSkew] = useState<Record<string, unknown>[]>([]);
   const [hostMetrics, setHostMetrics] = useState<Record<string, unknown>[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Which clusterInfo the loaded panels describe. Deriving `loading`
+  // from it means no synchronous setState at the top of the effect, and
+  // a reconnect that swaps the cluster out shows the spinner from the
+  // very first render rather than one render late.
+  const [loadedFor, setLoadedFor] = useState<ClusterInfo | null>(null);
+  const loading = loadedFor !== clusterInfo;
 
   useEffect(() => {
     if (!clusterInfo || clusterInfo.mode === 'postgresql') return;
-    setLoading(true);
     Promise.allSettled([
       api.getClusterTopology().then(setTopology),
       api.getClusterHistory(50).then(setHistory),
@@ -44,7 +47,7 @@ export default function Cluster() {
       api.getWorkfileSegments().then(setWorkfiles),
       api.getDataSkew().then(d => setDataSkew(Array.isArray(d) ? d : [])),
       api.getHostMetrics().then(d => setHostMetrics(Array.isArray(d) ? d : [])),
-    ]).finally(() => setLoading(false));
+    ]).finally(() => setLoadedFor(clusterInfo));
   }, [clusterInfo]);
 
   // Refresh segment stats every 10s
@@ -426,7 +429,7 @@ export default function Cluster() {
                 <CartesianGrid {...GRID} />
                 <XAxis dataKey="seg" {...AXIS} />
                 <YAxis {...AXIS} domain={[0, 100]} tickFormatter={(v: number) => `${v}%`} />
-                <Tooltip {...TT_STYLE} formatter={(v: number) => `${v.toFixed(2)}%`} />
+                <Tooltip {...TT_STYLE} formatter={tooltipFormatter(v => `${v.toFixed(2)}%`)} />
                 <Bar dataKey="hit_ratio" name="Cache Hit %" fill="#22c55e" />
               </BarChart>
             </ResponsiveContainer>
@@ -442,7 +445,7 @@ export default function Cluster() {
               <CartesianGrid {...GRID} />
               <XAxis dataKey="seg" {...AXIS} />
               <YAxis {...AXIS} tickFormatter={(v: number) => formatBytes(v)} />
-              <Tooltip {...TT_STYLE} formatter={(v: number) => formatBytes(v)} />
+              <Tooltip {...TT_STYLE} formatter={tooltipFormatter(formatBytes)} />
               <Bar dataKey="temp_bytes" name="Temp Bytes" fill="#f59e0b" />
             </BarChart>
           </ResponsiveContainer>

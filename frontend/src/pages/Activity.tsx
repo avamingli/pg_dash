@@ -5,10 +5,10 @@ import {
 } from 'recharts';
 import {
   Users, Activity as ActivityIcon, Clock, AlertTriangle, XCircle,
-  ChevronDown, ChevronRight, Search, RefreshCw, Pause, Play, Download,
+  ChevronDown, ChevronRight, Search, RefreshCw, Pause, Play,
 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { useMetrics } from '@/contexts/MetricsContext';
+import { useMetrics } from '@/contexts/metrics';
 import ExportButton from '@/components/ExportButton';
 import QueryWatchPanel from '@/components/QueryWatchPanel';
 import type { ActivityConnection, ActivitySummary } from '@/types/metrics';
@@ -252,7 +252,9 @@ export default function Activity() {
                   outerRadius={75}
                   innerRadius={40}
                   paddingAngle={2}
-                  label={(props) => `${(props as any).label}: ${(props as any).count}`}
+                  // name/value are the nameKey/dataKey fields recharts
+                  // resolves for us — no need to reach into the datum.
+                  label={({ name, value }) => `${name}: ${value}`}
                   labelLine={{ stroke: '#71717a' }}
                   fontSize={11}
                 >

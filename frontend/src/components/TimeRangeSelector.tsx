@@ -1,7 +1,5 @@
-import {} from 'react';
 import { Clock, Radio } from 'lucide-react';
-
-export type TimeRange = 'realtime' | '1h' | '6h' | '24h' | '3d' | '7d';
+import type { TimeRange } from '@/lib/timeRange';
 
 interface TimeRangeSelectorProps {
   value: TimeRange;
@@ -16,20 +14,6 @@ const OPTIONS: { key: TimeRange; label: string }[] = [
   { key: '3d', label: '3d' },
   { key: '7d', label: '7d' },
 ];
-
-export function timeRangeToISO(range: TimeRange): { from: string; to: string } | null {
-  if (range === 'realtime') return null;
-  const to = new Date();
-  const from = new Date();
-  switch (range) {
-    case '1h': from.setHours(from.getHours() - 1); break;
-    case '6h': from.setHours(from.getHours() - 6); break;
-    case '24h': from.setDate(from.getDate() - 1); break;
-    case '3d': from.setDate(from.getDate() - 3); break;
-    case '7d': from.setDate(from.getDate() - 7); break;
-  }
-  return { from: from.toISOString(), to: to.toISOString() };
-}
 
 export default function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
   return (
