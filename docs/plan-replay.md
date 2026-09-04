@@ -15,7 +15,8 @@ Handoff doc for **Phase 2 (replay)** of the Watch-panel snapshot feature. Phase 
 >
 > - It stores a **copy, not a link**. A picked `File` carries no path, so there is nothing durable to point at — only the File System Access API can hand back a re-openable handle, and that is Chromium-only. No loss either way: a recording is immutable once written, so a copy can't drift from the original, and it survives the JSON being moved, deleted, or left on another machine.
 > - Metadata and frames live in **two object stores** (`recording_meta`, `recording_data`), written in one transaction. Listing the library reads only the small rows; a long capture's frames are never deserialized to render a list.
-> - The **file name is the key**, so re-loading the same file updates its entry instead of stacking near-duplicates. Removing an entry deletes our copy and nothing else — the file it came from was never ours to touch — which is why the list says so and the trash button asks twice.
+> - The **file name is the key**, so re-loading the same file updates its entry instead of stacking near-duplicates. Removing an entry deletes our copy and nothing else — the file it came from was never ours to touch — which is why the list says so and every removal goes through a confirm dialog.
+> - The list is a **small library UI**, not just a list: an explicit ▶ Play per row (clicking a row selects it), checkboxes with a Select-all and a batch Remove, and drag-to-reorder whose order is persisted as an optional `position` on the meta row (entries without one sort newest-first, where they always were). A ✕ Close replay in the page header returns to the drop zone without touching the library.
 >
 > Sharing is still deferred, and the shape above is what a server-side library would replace: swap the four `recordingLibrary` functions for REST calls and the page itself doesn't change.
 

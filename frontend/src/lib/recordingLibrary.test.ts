@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import fourJoin from '../../../docs/samples/four-join.json';
 import { parseRecording, type Recording } from '@/lib/replayEngine';
 import {
-  deleteRecording, libraryAvailable, listRecordings, loadRecording, saveRecording,
+  deleteRecording, deleteRecordings, libraryAvailable, listRecordings, loadRecording, reorderRecordings, saveRecording,
 } from '@/lib/recordingLibrary';
 
 const sample = parseRecording(fourJoin);
@@ -95,5 +95,40 @@ describe('recordingLibrary', () => {
 
   it('reports a miss rather than throwing for an id that was never saved', async () => {
     expect(await loadRecording('nope.json')).toBeNull();
+  });
+
+  it('deletes a batch atomically and ignores ids it does not have', async () => {
+    await saveRecording('a.json', synthetic());
+    await saveRecording('b.json', synthetic());
+    await saveRecording('c.json', synthetic());
+    await deleteRecordings(['a.json', 'c.json', 'never.json']);
+    expect((await listRecordings()).map(m => m.fileName)).toEqual(['b.json']);
+    await deleteRecordings([]); // a no-op, not an error
+  });
+
+  it('lists in the dragged order once one is set', async () => {
+    await saveRecording('a.json', synthetic());
+    await saveRecording('b.json', synthetic());
+    await saveRecording('c.json', synthetic());
+    expect((await listRecordings()).map(m => m.fileName)).toEqual(['c.json', 'b.json', 'a.json']);
+    await reorderRecordings(['b.json', 'a.json', 'c.json']);
+    expect((await listRecordings()).map(m => m.fileName)).toEqual(['b.json', 'a.json', 'c.json']);
+  });
+
+  it('puts a new save on top of a reordered list and keeps a re-saved entry where it was', async () => {
+    await saveRecording('a.json', synthetic());
+    await saveRecording('b.json', synthetic());
+    await reorderRecordings(['a.json', 'b.json']);
+    await saveRecording('c.json', synthetic());
+    expect((await listRecordings()).map(m => m.fileName)).toEqual(['c.json', 'a.json', 'b.json']);
+    await saveRecording('b.json', synthetic({ query: 'again' }));
+    expect((await listRecordings()).map(m => m.fileName)).toEqual(['c.json', 'a.json', 'b.json']);
+  });
+
+  it('skips ids it no longer has when persisting an order', async () => {
+    await saveRecording('a.json', synthetic());
+    await saveRecording('b.json', synthetic());
+    await reorderRecordings(['gone.json', 'a.json', 'b.json']);
+    expect((await listRecordings()).map(m => m.fileName)).toEqual(['a.json', 'b.json']);
   });
 });

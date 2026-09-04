@@ -24,6 +24,12 @@ export interface RecordingMeta {
   durationMs: number;
   segments?: number;
   mode?: string;
+  /**
+   * Where the user dragged this entry in the /replay list; smaller is
+   * higher. Absent on entries saved before ordering existed — those
+   * sort by savedAt, newest first, which is where they always were.
+   */
+  position?: number;
 }
 
 const DB_NAME = 'pg_dash';
@@ -81,12 +87,18 @@ function committed(tx: IDBTransaction): Promise<void> {
   });
 }
 
-function metaOf(fileName: string, recording: Recording, savedAt: number): RecordingMeta {
+/** The list order: dragged position when set, else newest first. */
+function sortKey(m: RecordingMeta): number {
+  return m.position ?? -m.savedAt;
+}
+
+function metaOf(fileName: string, recording: Recording, savedAt: number, position: number): RecordingMeta {
   const frames = recording.frames;
   return {
     id: fileName,
     fileName,
     savedAt,
+    position,
     query: recording.query,
     startedAt: recording.startedAt,
     frameCount: frames.length,
@@ -110,10 +122,16 @@ function metaOf(fileName: string, recording: Recording, savedAt: number): Record
  * entry instead of stacking near-identical rows. Two different captures
  * that happen to share a name collide, which the timestamped
  * `plan-snapshot-<ISO>.json` names the Watch panel writes make unlikely.
+ *
+ * A new entry goes to the top of the list; a re-loaded one keeps the
+ * place the user dragged it to.
  */
 export async function saveRecording(fileName: string, recording: Recording): Promise<RecordingMeta> {
-  const meta = metaOf(fileName, recording, Date.now());
   const db = await openDb();
+  const existing = await request<RecordingMeta[]>(db.transaction(META_STORE, 'readonly').objectStore(META_STORE).getAll());
+  const prior = existing.find(m => m.id === fileName);
+  const position = prior?.position ?? Math.min(0, ...existing.map(sortKey)) - 1;
+  const meta = metaOf(fileName, recording, Date.now(), position);
   // One transaction over both stores: a meta row whose data row failed
   // to write would show in the list and then refuse to play.
   const tx = db.transaction([META_STORE, DATA_STORE], 'readwrite');
@@ -123,12 +141,30 @@ export async function saveRecording(fileName: string, recording: Recording): Pro
   return meta;
 }
 
-/** Every saved recording's index entry, newest copy first. */
+/** Every saved recording's index entry, in list order (see sortKey). */
 export async function listRecordings(): Promise<RecordingMeta[]> {
   const db = await openDb();
   const tx = db.transaction(META_STORE, 'readonly');
   const all = await request<RecordingMeta[]>(tx.objectStore(META_STORE).getAll());
-  return all.sort((a, b) => b.savedAt - a.savedAt);
+  return all.sort((a, b) => sortKey(a) - sortKey(b));
+}
+
+/**
+ * Persist a drag-reorder: `orderedIds` is the whole list, top to bottom.
+ * Ids the library no longer has are skipped; entries not named keep
+ * their old key, so a stale list from a second tab can't lose anything.
+ */
+export async function reorderRecordings(orderedIds: string[]): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction(META_STORE, 'readwrite');
+  const store = tx.objectStore(META_STORE);
+  const all = await request<RecordingMeta[]>(store.getAll());
+  const byId = new Map(all.map(m => [m.id, m]));
+  orderedIds.forEach((id, i) => {
+    const m = byId.get(id);
+    if (m) store.put({ ...m, position: i });
+  });
+  await committed(tx);
 }
 
 /** The full recording behind a library entry, or null if it's gone. */
@@ -143,10 +179,18 @@ export async function loadRecording(id: string): Promise<Recording | null> {
  * Drop our copy of a recording. The JSON file it was loaded from is
  * never touched — we only ever had a copy of it.
  */
-export async function deleteRecording(id: string): Promise<void> {
+export function deleteRecording(id: string): Promise<void> {
+  return deleteRecordings([id]);
+}
+
+/** Drop several copies at once — all of them or none. */
+export async function deleteRecordings(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
   const db = await openDb();
   const tx = db.transaction([META_STORE, DATA_STORE], 'readwrite');
-  tx.objectStore(META_STORE).delete(id);
-  tx.objectStore(DATA_STORE).delete(id);
+  for (const id of ids) {
+    tx.objectStore(META_STORE).delete(id);
+    tx.objectStore(DATA_STORE).delete(id);
+  }
   await committed(tx);
 }
