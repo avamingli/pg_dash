@@ -34,6 +34,35 @@ const PAD = 24;
 // hairline so it actually registers at this card size, but still thin
 // enough to stay in its own zone under the text stack.
 const PROGRESS_H = 6;
+// The rising tint behind a card's text — the second, area-based encoding
+// of the same progress the strip shows. Alpha at zoom 1 is low enough
+// that text contrast is untouched (zinc-100 on zinc-900 + 14% emerald is
+// still ~14:1; zinc-900 on white + 10% is ~15:1). It climbs as the view
+// zooms out, because a 6px strip stops registering below ~0.7 while a
+// half-green card reads at any size — and at those zooms the text is
+// unreadable anyway, so there is nothing left for a stronger tint to
+// compete with. Light canvas runs lower: emerald shows more on white.
+const TINT_ALPHA_DARK = { near: 0.14, far: 0.42 };
+const TINT_ALPHA_LIGHT = { near: 0.10, far: 0.32 };
+// The tint's surface while a node is active is a GPCC-style wave: two
+// SVG layers sliding at different speeds. Height of the wave box; the
+// path inside crests ~10px peak-to-trough, which is what makes it read
+// as water at card size rather than a polite ripple. It is painted in
+// the tint's own colour and alpha — the 8f062db wave that covered text
+// did so with a 0.65-alpha crest and a glowing surface line, not with
+// the wave itself. Motion carries "alive"; contrast stays out of it.
+const WAVE_H = 16;
+// The surface is not the body's colour. Water reads as water because its
+// surface differs from its depth: on the dark canvas the wave is a
+// lighter emerald (400) than the emerald-500 body, on the light canvas a
+// darker one (600) — in each case the direction that moves *away* from
+// the canvas, since a tint pulled toward the background is what was
+// making the wave vanish. Alpha is the body's times WAVE_ALPHA_MULT,
+// capped so the far-zoom end doesn't go opaque.
+const WAVE_RGB_DARK = '52,211,153';
+const WAVE_RGB_LIGHT = '5,150,105';
+const WAVE_ALPHA_MULT = 3;
+const WAVE_ALPHA_MAX = 0.6;
 // Right-shift applied to Append/MergeAppend/Sequence stacked children so
 // they visually indent from their parent, matching EXPLAIN-text style
 // (`Append / -> Seq Scan p1 / -> Seq Scan p2`). Also the gap width the
@@ -246,6 +275,13 @@ interface PlanGraphProps {
 
 const ZOOM_MIN = 0.4;
 const ZOOM_MAX = 2;
+
+/** Tint alpha for the current zoom: `near` at 1× and above, `far` at ZOOM_MIN, linear between. */
+function tintAlpha(zoom: number, lightCanvas: boolean): number {
+  const { near, far } = lightCanvas ? TINT_ALPHA_LIGHT : TINT_ALPHA_DARK;
+  const t = Math.min(1, Math.max(0, (1 - zoom) / (1 - ZOOM_MIN)));
+  return near + (far - near) * t;
+}
 // Minimap in the canvas's bottom-right corner. Shows the full plan tree
 // scaled down + a rectangle over the currently-visible area; clicking
 // jumps the pan to center on that spot. Useful once the plan is big
@@ -345,6 +381,36 @@ export default function PlanGraph({
   const panRef = useRef<{ pointerId: number; startX: number; startY: number; panX: number; panY: number; moved: boolean } | null>(null);
   const { layout, leafCount, maxDepth } = useMemo(() => layoutTree(root), [root]);
   const allNodes = useMemo(() => flatten(layout), [layout]);
+
+  // Water level for a node that is consuming but has no measurable
+  // progress of its own (a Partial HashAgg pulling from a live Hash Join
+  // reports rows=0 until it emits). Such a node cannot be further along
+  // than its inputs, so its surface sits at the slowest input's level —
+  // completed inputs count as 100, unmeasured ones are skipped, and a
+  // node whose inputs are all unmeasured gets null (surface at the
+  // bottom, "alive, nothing to go on yet"). Without this the unknown case
+  // drew its surface near the top of the card, which read as "almost
+  // done" over a child that was plainly still running.
+  const inputBoundPct = useMemo(() => {
+    const out = new Map<LayoutNode, number | null>();
+    const visit = (ln: LayoutNode): number | null => {
+      const nid = ln.node.Nid ?? nodeIds?.get(ln.node);
+      const live = nid != null ? liveNodes?.[nid] : undefined;
+      const state = nid != null ? nodeStates?.[nid] : undefined;
+      const kids = ln.children.map(visit);
+      let own: number | null = finished || state === 'completed'
+        ? 100
+        : estimateCompletionPct(live, ln.node['Plan Rows'], !!finished);
+      if (own == null) {
+        const known = kids.filter((p): p is number => p != null);
+        own = known.length > 0 ? Math.min(...known) : null;
+      }
+      out.set(ln, own);
+      return own;
+    };
+    visit(layout);
+    return out;
+  }, [layout, nodeIds, liveNodes, nodeStates, finished]);
 
   // Add STACK_INDENT_PX to the canvas width when any stacked child exists —
   // those cards render shifted right and would otherwise clip off the
@@ -680,6 +746,38 @@ export default function PlanGraph({
           const fillPct = pct != null ? Math.min(100, Math.max(4, pct)) : null;
           const greenFillPct = state === 'completed' ? 100 : (state === 'active' ? (fillPct ?? 4) : 0);
           const showShimmer = state === 'active' && fillPct == null;
+
+          // The same progress, encoded twice: the 6px strip below for a
+          // precise read up close, and a rising tint behind the text for
+          // an at-a-glance read at any zoom. The tint is a background
+          // colour, not a decoration — no crest line, no bubbles, no
+          // text-shadow — which is what separates it from the liquid fill
+          // 4421d3a removed for covering text. State maps onto it as:
+          //   active, pct known   — tint to pct%, full alpha, wave surface
+          //   active, pct unknown — tint to the slowest input's level
+          //                         (inputBoundPct) at 0.45×, wave surface;
+          //                         with no measured input at all the
+          //                         wave laps at the bottom ("alive, but
+          //                         nothing to go on yet")
+          //   completed           — full-height at 0.65×, flat, still
+          //   idle                — none
+          // Active is the brightest of the three on purpose: zoomed out,
+          // the thing worth spotting is the frontier where work is
+          // happening now, and a field of equally solid finished cards
+          // would bury it.
+          const alpha = tintAlpha(zoom, lightCanvas);
+          const tintAlphaFor = state === 'completed' ? alpha * 0.65 : showShimmer ? alpha * 0.45 : alpha;
+          const boundPct = showShimmer ? (inputBoundPct.get(ln) ?? 0) : null;
+          const tintPct = state === 'completed' ? 100 : state === 'active' ? (boundPct ?? greenFillPct) : 0;
+          const tintRgba = (a: number) => `rgba(16,185,129,${a})`;
+          const waveRgba = (a: number) => `rgba(${lightCanvas ? WAVE_RGB_LIGHT : WAVE_RGB_DARK},${Math.min(WAVE_ALPHA_MAX, a)})`;
+          // The wave layers run well above the body's alpha (and in the
+          // surface colour, see WAVE_RGB_*) — at the body's own alpha the
+          // motion didn't register on either canvas. At 1× dark this is
+          // ~0.42 for the back layer; zinc-100 over it still clears 5:1.
+          const waveAlpha = tintAlphaFor * WAVE_ALPHA_MULT;
+          // Where the wave box sits: its vertical middle is the surface.
+          const waveBottom = `calc(${tintPct}% - ${WAVE_H / 2}px)`;
           // Glow is reserved for "healthy and actively running" — an
           // estimate-error or selected node already has its own strong
           // border color to carry attention, a second glowing halo on top
@@ -720,6 +818,51 @@ export default function PlanGraph({
                 opacity: cardDimmed ? 0.5 : 1,
               }}
             >
+              {/* Rising tint — first children so everything else paints
+                  over them. Starts right of the slice stripe (left-1.5 =
+                  its width). The body is flat colour; while active, its
+                  top edge is the two wave layers below, whose bottoms meet
+                  the body top so the liquid is one continuous shape. Wave
+                  SVGs are 2× the card width with two identical periods, so
+                  translateX(-50%) is exactly one period — a seamless loop.
+                  Back and front slide at different speeds with opposite
+                  crest polarity: each layer's peak shows through the
+                  other's trough, and that parallax is what reads as
+                  moving water. Where they overlap the alpha roughly
+                  doubles, giving a soft brighter band at the surface —
+                  soft, because both layers are the tint's own colour. */}
+              {tintPct > 0 && (
+                <div
+                  className="absolute left-1.5 right-0 bottom-0 transition-[height] duration-500"
+                  style={{
+                    height: state === 'active' ? `calc(${tintPct}% - ${WAVE_H / 2}px)` : `${tintPct}%`,
+                    backgroundColor: tintRgba(tintAlphaFor),
+                  }}
+                  aria-hidden="true"
+                />
+              )}
+              {state === 'active' && (
+                <>
+                  <svg
+                    aria-hidden="true"
+                    className="absolute left-1.5 pg-wave-back pointer-events-none transition-[bottom] duration-500"
+                    preserveAspectRatio="none"
+                    viewBox="0 0 200 20"
+                    style={{ bottom: waveBottom, width: 'calc((100% - 6px) * 2)', height: WAVE_H }}
+                  >
+                    <path d="M0,10 Q25,-2 50,10 T100,10 T150,10 T200,10 V20 H0 Z" fill={waveRgba(waveAlpha)} />
+                  </svg>
+                  <svg
+                    aria-hidden="true"
+                    className="absolute left-1.5 pg-wave-front pointer-events-none transition-[bottom] duration-500"
+                    preserveAspectRatio="none"
+                    viewBox="0 0 200 20"
+                    style={{ bottom: waveBottom, width: 'calc((100% - 6px) * 2)', height: WAVE_H }}
+                  >
+                    <path d="M0,10 Q25,22 50,10 T100,10 T150,10 T200,10 V20 H0 Z" fill={waveRgba(waveAlpha * 0.75)} />
+                  </svg>
+                </>
+              )}
               {sliceHex && (
                 <div
                   className="absolute left-0 top-0 bottom-0 w-1.5"
@@ -734,7 +877,8 @@ export default function PlanGraph({
                   in a thin dedicated zone so it never overlaps text or
                   competes with the label stack for attention. Shimmer
                   runs across the filled portion while active, giving the
-                  "still working" cue without needing waves on the body.
+                  "still working" cue. The tint above is the same number
+                  at card scale, for when this strip is too small to see.
                   For shimmer-only state (rows>0 but no plan estimate),
                   the base track is filled full-width with a moving stripe
                   pattern — same "unknown but active" language as before. */}

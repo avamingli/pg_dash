@@ -64,6 +64,19 @@ body {
    filled portion while the node is actively producing rows, so the strip
    itself carries the "still working" signal without needing waves or
    bubbles across the whole card. */
+/* PlanGraph: the rising tint's water surface while a node is active.
+   Two SVG wave layers slide horizontally at different speeds; each is
+   2x its card's width holding two identical periods, so translateX(-50%)
+   is exactly one period and the loop has no seam. Painted in the tint's
+   own low alpha -- motion is the signal, not contrast, which is what
+   keeps the text above it readable where the 8f062db wave was not. */
+@keyframes pg-wave-slide {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+.pg-wave-back  { animation: pg-wave-slide 4.5s linear infinite; }
+.pg-wave-front { animation: pg-wave-slide 2.6s linear infinite; }
+
 @keyframes pg-progress-shimmer {
   from { transform: translateX(-100%); }
   to   { transform: translateX(100%); }
