@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fourJoin from '../../../docs/samples/four-join.json';
+import customerRevenue from '../../../docs/samples/customer-revenue.json';
 import { parseRecording, replayRecording, ReplayError, type Recording } from './replayEngine';
 import type { NodeCompletionState } from './planTree';
 
@@ -151,5 +152,47 @@ describe('replayRecording — four-join sample', () => {
       runTimeMs: s.runTimeMs,
     });
     expect(rebuilt.map(shape)).toEqual(states.map(shape));
+  });
+});
+
+describe('replayRecording — customer-revenue sample', () => {
+  // The demo-sized sample (3 slices, 8 nodes, ~21s): shaped for screen
+  // captures rather than coverage, so what matters here is the story it
+  // tells frame by frame — small side done first, big side streams,
+  // coordinator receives last — and that it actually ends.
+  const states = replayRecording(parseRecording(customerRevenue), SEGMENTS);
+  const last = states[states.length - 1];
+  const doneAt = (sid: number) => states.findIndex(s => s.currentlyCompleted.has(sid));
+
+  it('is three slices over 27 frames at 800ms, closed by a terminal frame', () => {
+    expect(states).toHaveLength(27);
+    expect(states.map(s => s.tsMs)).toEqual([...Array(27).keys()].map(i => i * 800));
+    expect(states[0].sliceIds && new Set(states[0].sliceIds.values())).toEqual(new Set([1, 2, 3]));
+    expect(states[0].rootMeta).toEqual({ nid: 1, estRows: 1200 });
+    expect(states.slice(0, 26).every(s => !s.finished)).toBe(true);
+    expect(last.finished).toBe(true);
+  });
+
+  it('completes the slices in story order: customers, orders, then the coordinator', () => {
+    expect(doneAt(3)).toBe(8);    // customers redistribute plateaus at 5.6s, read done at 6.4s
+    expect(doneAt(2)).toBe(19);   // orders redistribute plateaus at 14.4s, read done at 15.2s
+    expect(doneAt(1)).toBe(-1);   // the Gather receiver only ends with the query itself
+    expect(last.completedFrozenMs).toEqual({ 2: 15200, 3: 6400 });
+    expect(last.runTimeMs).toBe(20800);
+  });
+
+  it('delivers the result to the coordinator only once the orders side is done', () => {
+    expect(states[18].liveNodes[1]).toBeUndefined();
+    expect(states[19].liveNodes[1]).toEqual({ rows: 100, segments: 3, growing: true });
+    expect(states[23].liveNodes[1]).toEqual({ rows: 1200, segments: 3, growing: true });
+    // Two quiet frames at the end so the finished tree holds before a loop.
+    expect(states[25].liveNodes[1]).toEqual({ rows: 1200, segments: 3, growing: false });
+    expect(last.liveNodes).toEqual(states[25].liveNodes);
+  });
+
+  it('ramps memory to a peak at the aggregate burst and settles', () => {
+    expect(states[1].memoryMb).toBe(108);
+    expect(states[19].memoryMb).toBe(396);
+    expect(last.memoryMb).toBe(180);
   });
 });
