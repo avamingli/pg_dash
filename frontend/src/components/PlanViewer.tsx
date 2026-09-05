@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { ChevronRight, ChevronDown, Check } from 'lucide-react';
 import type { QueryProgressPlanNode } from '@/types/metrics';
 import {
@@ -52,6 +52,8 @@ interface PlanViewerProps {
   sliceSummaries?: SliceSummary[];
   runTimeMs?: number;
   estProgressPct?: number | null;
+  /** Playback controls to show inside the graph's fullscreen overlay — see PlanGraph. */
+  fullscreenTransport?: ReactNode;
 }
 
 // ── Components ──
@@ -239,7 +241,7 @@ function PlanNodeView({ node, depth, rootTime, nodeIds, liveNodes, nodeStates, f
 
 type ViewMode = 'graph' | 'tree' | 'raw';
 
-export default function PlanViewer({ plan, liveNodes, realPlan, finished, segments, graphMaxHeight, sliceSummaries, runTimeMs, estProgressPct }: PlanViewerProps) {
+export default function PlanViewer({ plan, liveNodes, realPlan, finished, segments, graphMaxHeight, sliceSummaries, runTimeMs, estProgressPct, fullscreenTransport }: PlanViewerProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('graph');
   const usingRealPlan = !!realPlan && realPlan.length > 0;
   const root = usingRealPlan ? buildRealPlanTree(realPlan!, segments) : parsePlan(plan);
@@ -317,6 +319,7 @@ export default function PlanViewer({ plan, liveNodes, realPlan, finished, segmen
         <PlanGraph
           root={root} rootTime={rootTime} nodeIds={nodeIds} liveNodes={liveNodes} nodeStates={nodeStates} finished={finished} maxHeight={graphMaxHeight}
           sliceSummaries={sliceSummaries} runTimeMs={runTimeMs} estProgressPct={estProgressPct}
+          fullscreenTransport={fullscreenTransport}
         />
       ) : (
         <div className="p-4">

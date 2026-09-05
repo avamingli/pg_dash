@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Film, Pause, Play, SkipBack } from 'lucide-react';
 import PlanPlayer from '@/components/PlanPlayer';
 import { replayRecording, type Recording } from '@/lib/replayEngine';
@@ -77,6 +77,15 @@ export default function ReplayPanel({ recording }: ReplayPanelProps) {
     setIndex(Math.min(lastIndex, Math.max(0, next)));
   };
 
+  const transport = (
+    <Transport
+      playing={playing} atEnd={atEnd}
+      frame={state.frameIndex + 1} frameCount={states.length} tsMs={state.tsMs}
+      index={index} lastIndex={lastIndex} speed={speed}
+      togglePlay={togglePlay} restart={restart} scrubTo={scrubTo} setSpeed={setSpeed}
+    />
+  );
+
   return (
     <div className="flex flex-col h-full min-h-0 bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
       <div className="flex items-start justify-between gap-4 px-4 py-3 border-b border-zinc-800">
@@ -98,55 +107,74 @@ export default function ReplayPanel({ recording }: ReplayPanelProps) {
         </div>
       </div>
 
-      <div className="flex items-center gap-3 px-4 py-2 border-b border-zinc-800">
-        <button
-          onClick={togglePlay}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 transition-colors text-xs"
-          title={atEnd ? 'Replay from the start' : playing ? 'Pause' : 'Play'}
-        >
-          {playing && !atEnd ? <Pause size={12} /> : <Play size={12} />}
-          {playing && !atEnd ? 'Pause' : atEnd ? 'Replay' : 'Play'}
-        </button>
-        <button
-          onClick={restart}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors text-xs"
-          title="Back to the first frame"
-        >
-          <SkipBack size={12} /> Restart
-        </button>
-        <span className="text-[11px] text-zinc-500 tabular-nums shrink-0">
-          Frame {state.frameIndex + 1}/{states.length} · {(state.tsMs / 1000).toFixed(1)}s
-        </span>
+      <div className="flex items-center gap-3 px-4 py-2 border-b border-zinc-800">{transport}</div>
 
-        <input
-          type="range"
-          min={0}
-          max={lastIndex}
-          step={1}
-          value={index}
-          onChange={e => scrubTo(Number(e.target.value))}
-          className="flex-1 h-1 accent-blue-500 cursor-pointer"
-          aria-label="Playback position"
-          title={`Frame ${state.frameIndex + 1} of ${states.length}`}
-        />
-
-        <div className="flex items-center gap-0.5 shrink-0" role="group" aria-label="Playback speed">
-          {SPEEDS.map(x => (
-            <button
-              key={x}
-              onClick={() => setSpeed(x)}
-              className={`px-1.5 py-0.5 rounded text-[11px] tabular-nums transition-colors ${
-                speed === x ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-              title={x === 1 ? 'Real time — the cadence the run was captured at' : `${x}x the recorded cadence`}
-            >
-              {x}x
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <PlanPlayer {...state} segments={segments} />
+      <PlanPlayer {...state} segments={segments} transport={transport} />
     </div>
+  );
+}
+
+// Play / restart / position / speed. Rendered twice on purpose: in the
+// panel's own control bar, and — via PlanPlayer → PlanGraph — inside the
+// graph's fullscreen overlay. Fullscreen is a portal into document.body,
+// so nothing that sits next to the graph in this component is visible
+// there, and without this the only way to restart a recording once
+// fullscreen was open was to leave it, which is exactly the moment a
+// screen capture can't afford (see PlanGraph's `fullscreenTransport`).
+// Both copies are the same elements driven by the same state, so
+// pressing ▶ in either moves the other.
+function Transport({ playing, atEnd, frame, frameCount, tsMs, index, lastIndex, speed, togglePlay, restart, scrubTo, setSpeed }: {
+  playing: boolean; atEnd: boolean; frame: number; frameCount: number; tsMs: number;
+  index: number; lastIndex: number; speed: number;
+  togglePlay: () => void; restart: () => void; scrubTo: (i: number) => void; setSpeed: (x: number) => void;
+}): ReactNode {
+  return (
+    <>
+      <button
+        onClick={togglePlay}
+        className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 transition-colors text-xs"
+        title={atEnd ? 'Replay from the start' : playing ? 'Pause' : 'Play'}
+      >
+        {playing && !atEnd ? <Pause size={12} /> : <Play size={12} />}
+        {playing && !atEnd ? 'Pause' : atEnd ? 'Replay' : 'Play'}
+      </button>
+      <button
+        onClick={restart}
+        className="flex items-center gap-1.5 px-2.5 py-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors text-xs"
+        title="Back to the first frame"
+      >
+        <SkipBack size={12} /> Restart
+      </button>
+      <span className="text-[11px] text-zinc-500 tabular-nums shrink-0">
+        Frame {frame}/{frameCount} · {(tsMs / 1000).toFixed(1)}s
+      </span>
+
+      <input
+        type="range"
+        min={0}
+        max={lastIndex}
+        step={1}
+        value={index}
+        onChange={e => scrubTo(Number(e.target.value))}
+        className="flex-1 h-1 accent-blue-500 cursor-pointer"
+        aria-label="Playback position"
+        title={`Frame ${frame} of ${frameCount}`}
+      />
+
+      <div className="flex items-center gap-0.5 shrink-0" role="group" aria-label="Playback speed">
+        {SPEEDS.map(x => (
+          <button
+            key={x}
+            onClick={() => setSpeed(x)}
+            className={`px-1.5 py-0.5 rounded text-[11px] tabular-nums transition-colors ${
+              speed === x ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+            title={x === 1 ? 'Real time — the cadence the run was captured at' : `${x}x the recorded cadence`}
+          >
+            {x}x
+          </button>
+        ))}
+      </div>
+    </>
   );
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Table2, GitMerge, Sigma, Share2, ArrowUpDown, Box, ListPlus,
@@ -271,6 +271,17 @@ interface PlanGraphProps {
   sliceSummaries?: SliceSummary[];
   runTimeMs?: number;
   estProgressPct?: number | null;
+  /**
+   * Replay transport (play / restart / scrub / speed), shown in the
+   * fullscreen header strip, between the zoom toolbar and the close
+   * button — never under the canvas, so a capture cropped below that
+   * strip shows a plan that looks live. Same reason as `sliceSummaries`: the
+   * overlay is a portal into document.body, so the driver's own control
+   * bar isn't there — and a recording that can only be restarted by
+   * leaving fullscreen loses its first seconds to the click every time.
+   * Outside fullscreen the driver renders the controls itself.
+   */
+  fullscreenTransport?: ReactNode;
 }
 
 const ZOOM_MIN = 0.4;
@@ -297,7 +308,7 @@ const PAN_CLICK_THRESHOLD = 4;
 
 export default function PlanGraph({
   root, rootTime, nodeIds, liveNodes, nodeStates, finished, maxHeight = 460,
-  sliceSummaries, runTimeMs, estProgressPct,
+  sliceSummaries, runTimeMs, estProgressPct, fullscreenTransport,
 }: PlanGraphProps) {
   // Toggle between the app's normal dark canvas and a light one meant
   // for screenshots / thumbnails / video demos where the plan tree
@@ -1164,8 +1175,14 @@ export default function PlanGraph({
         <div className="w-full h-full max-w-[1800px] bg-zinc-950 border border-zinc-800 rounded-lg flex p-4 overflow-hidden">
           {sidePanel}
           <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-4">
               {toolbar}
+              {/* In the header strip, not under the canvas: a screen capture
+                  cropped just below this row shows a plan running with no
+                  hint that it is a replay. */}
+              {fullscreenTransport && (
+                <div className="flex-1 min-w-0 flex items-center gap-3 mb-2" data-testid="fullscreen-transport">{fullscreenTransport}</div>
+              )}
               <button onClick={() => setIsFullscreen(false)} className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 mb-2" title="Close (Esc)">
                 <X size={16} />
               </button>

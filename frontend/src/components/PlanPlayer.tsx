@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import PlanViewer, { type LiveNodeStats } from '@/components/PlanViewer';
 import {
@@ -46,6 +46,13 @@ export interface PlanPlayerState {
 interface PlanPlayerProps extends PlanPlayerState {
   /** Cluster segment count — synthesizes Motion N:M labels in buildRealPlanTree. */
   segments?: number;
+  /**
+   * The driver's playback controls, if it has any (ReplayPanel does, the
+   * live panel doesn't). Passed down to the graph so its fullscreen
+   * overlay — a portal into document.body, outside this tree — can show
+   * them too.
+   */
+  transport?: ReactNode;
 }
 
 /**
@@ -57,7 +64,7 @@ interface PlanPlayerProps extends PlanPlayerState {
  */
 export default function PlanPlayer({
   realPlan, liveNodes, sliceIds, sliceTiming, currentlyCompleted, completedFrozenMs,
-  rootMeta, memoryMb, finished, runTimeMs, segments,
+  rootMeta, memoryMb, finished, runTimeMs, segments, transport,
 }: PlanPlayerProps) {
   const hasRealPlan = !!realPlan && realPlan.length > 0;
 
@@ -110,6 +117,7 @@ export default function PlanPlayer({
             liveNodes={liveNodes} realPlan={realPlan} finished={finished}
             segments={segments}
             sliceSummaries={sliceSummaries} runTimeMs={runTimeMs} estProgressPct={overallProgressPct}
+            fullscreenTransport={transport}
           />
         ) : finished ? (
           <p className="text-sm text-zinc-500 p-4">Query ended before its plan tree was captured — nothing to show.</p>

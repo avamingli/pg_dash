@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, act, fireEvent } from '@testing-library/react';
+import { render, screen, act, fireEvent, within } from '@testing-library/react';
 import fourJoin from '../../../docs/samples/four-join.json';
 import { parseRecording } from '@/lib/replayEngine';
 import ReplayPanel from './ReplayPanel';
@@ -7,9 +7,15 @@ import ReplayPanel from './ReplayPanel';
 // Stand in for the plan view: what matters here is *which* frame's state
 // the panel hands over, not how the graph draws it (PlanPlayer's own
 // pipeline output is covered end-to-end in lib/replay.test.ts).
+// The stand-in can also surface the `transport` prop the way PlanGraph's
+// fullscreen overlay does — opt-in per test, since a second copy of the
+// controls would make every getByTitle above ambiguous.
+const mock = vi.hoisted(() => ({ renderTransport: false }));
 vi.mock('@/components/PlanPlayer', () => ({
-  default: ({ runTimeMs, memoryMb, finished }: { runTimeMs: number; memoryMb: number | null; finished: boolean }) => (
-    <div data-testid="plan-player" data-runtime={runTimeMs} data-memory={String(memoryMb)} data-finished={String(finished)} />
+  default: ({ runTimeMs, memoryMb, finished, transport }: { runTimeMs: number; memoryMb: number | null; finished: boolean; transport?: React.ReactNode }) => (
+    <div data-testid="plan-player" data-runtime={runTimeMs} data-memory={String(memoryMb)} data-finished={String(finished)}>
+      {mock.renderTransport && <div data-testid="fullscreen-transport">{transport}</div>}
+    </div>
   ),
 }));
 
@@ -25,7 +31,7 @@ function play(frames: number, waitMs = 900) {
 }
 
 beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); mock.renderTransport = false; });
 
 describe('ReplayPanel', () => {
   it('starts at the first frame and shows the recording metadata', () => {
@@ -95,5 +101,22 @@ describe('ReplayPanel', () => {
     expect(shownRunTime()).toBe(2700);
     fireEvent.click(screen.getByTitle('Back to the first frame'));
     expect(shownRunTime()).toBe(0);
+  });
+
+  it('hands the same transport to the plan view, so fullscreen can pause and restart', () => {
+    // Fullscreen is a portal outside the panel: the controls it shows are
+    // this second copy, driven by the same state as the panel's own bar.
+    mock.renderTransport = true;
+    render(<ReplayPanel recording={recording} />);
+    const fullscreen = within(screen.getByTestId('fullscreen-transport'));
+    play(2);
+    fireEvent.click(fullscreen.getByTitle('Pause'));
+    play(5);
+    expect(shownRunTime()).toBe(1800);
+    expect(screen.getAllByTitle('Play')).toHaveLength(2);  // both copies agree
+    fireEvent.click(fullscreen.getByTitle('Back to the first frame'));
+    expect(shownRunTime()).toBe(0);
+    play(1);
+    expect(shownRunTime()).toBe(900);  // restart also resumes playback
   });
 });
