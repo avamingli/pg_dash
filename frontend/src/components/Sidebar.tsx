@@ -31,7 +31,6 @@ const baseNavItems = [
   { to: '/queries', icon: BarChart3, label: 'Query Analysis' },
   { to: '/history', icon: History, label: 'Query History' },
   { to: '/sql', icon: Terminal, label: 'SQL Editor' },
-  { to: '/replay', icon: Film, label: 'Plan Replay' },
   { to: '/replication', icon: GitBranch, label: 'Replication' },
   { to: '/locks', icon: Lock, label: 'Locks' },
   { to: '/vacuum', icon: Trash2, label: 'Vacuum' },
@@ -48,11 +47,19 @@ export default function Sidebar() {
 
   const navItems = useMemo(() => {
     if (clusterInfo && clusterInfo.mode !== 'postgresql') {
-      // Insert "Cluster" after "Overview"
+      // MPP-only entries: "Cluster" after "Overview", and "Plan Replay"
+      // after "SQL Editor". Replay itself is client-side and would run
+      // anywhere, but its recordings come from the Watch panel, which
+      // only exists on a distributed cluster — so the entry follows the
+      // same gate as its data source. The /replay route stays mounted
+      // for anyone who opens it by URL.
+      const sqlIdx = baseNavItems.findIndex(n => n.to === '/sql');
       return [
         baseNavItems[0],
         { to: '/cluster', icon: Network, label: 'Cluster' },
-        ...baseNavItems.slice(1),
+        ...baseNavItems.slice(1, sqlIdx + 1),
+        { to: '/replay', icon: Film, label: 'Plan Replay' },
+        ...baseNavItems.slice(sqlIdx + 1),
       ];
     }
     return baseNavItems;

@@ -48,4 +48,25 @@ describe('Sidebar', () => {
     renderSidebar();
     expect(screen.getByText('Cluster')).toBeInTheDocument();
   });
+
+  it('lists Plan Replay right after SQL Editor on a distributed cluster only', () => {
+    // Recordings come from the Watch panel, which needs an MPP cluster —
+    // so the replay entry follows the same gate as Cluster.
+    useMetrics.mockReturnValue({
+      clusterInfo: { mode: 'cloudberry', product_name: 'Apache Cloudberry' },
+    });
+    renderSidebar();
+    const labels = screen.getAllByRole('link').map(a => a.textContent);
+    expect(labels.indexOf('Plan Replay')).toBe(labels.indexOf('SQL Editor') + 1);
+  });
+
+  it('hides Plan Replay on plain PostgreSQL', () => {
+    useMetrics.mockReturnValue({
+      clusterInfo: { mode: 'postgresql', product_name: 'PostgreSQL' },
+    });
+    renderSidebar();
+    expect(screen.queryByText('Plan Replay')).not.toBeInTheDocument();
+    expect(screen.queryByText('Cluster')).not.toBeInTheDocument();
+    expect(screen.getByText('SQL Editor')).toBeInTheDocument();
+  });
 });
