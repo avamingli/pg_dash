@@ -10,19 +10,24 @@
 --       Redistribute Motion 3:3            slice 2   (on category)
 --         Streaming Partial HashAggregate
 --           Hash Join
---             Seq Scan on lineitem         (local, filtered)
+--             Seq Scan on lineitem         (local, filter keeps 1 row in 20)
 --             Hash
 --               Broadcast Motion 3:3       slice 3   (products, small)
 --                 Seq Scan on products
 --
--- The lineitem_id filter is the run-time knob. The scan itself is the
--- floor (~14 s for the full table on that cluster); every row that
--- passes the filter adds join + aggregate work on top:
---   <= 6 500 000   (5%)   ~30-40 s   ← the one used for the recording
---   <= 13 000 000  (10%)  ~40 s
---   no filter             ~4 min
+-- The filter is the run-time knob, and its *shape* matters more than
+-- its selectivity. lineitem is stored in lineitem_id order, so a range
+-- filter (lineitem_id <= N) matches one contiguous stretch of blocks:
+-- the scan emits nothing for seconds, then bursts, then emits nothing
+-- again — on the Watch panel the tree sits frozen and jumps. A modulo
+-- filter matches rows spread evenly through the table, so the scan's
+-- row count climbs steadily for the whole run, which is what you want
+-- to see. Measured with 1 s samples of instrument_detail:
+--   lineitem_id % 20 = 0   (5%)   ~15 s, scan grows every second   ← use this
+--   lineitem_id <= 6500000 (5%)   ~12 s, scan at 0 for 4 s then a burst
+--   no filter                     ~4 min
 -- Timings move with whatever else the cluster is doing; check with
--- \timing before you hit Record.
+-- \timing before you hit Record. 12-20 s is the target for a video.
 --
 -- Prerequisites: CREATE EXTENSION whpg_plan_tree; gp_enable_query_metrics = on.
 
@@ -31,5 +36,5 @@ SELECT p.category,
        sum(li.quantity * p.unit_price * (1 - li.discount)) AS revenue
 FROM lineitem li
 JOIN products p ON p.product_id = li.product_id
-WHERE li.lineitem_id <= 6500000
+WHERE li.lineitem_id % 20 = 0
 GROUP BY p.category;
