@@ -201,6 +201,7 @@ pg_dash/
 │       │   ├── os/          # OS metrics via gopsutil (CPU, mem, disk, net)
 │       │   └── pg/          # PostgreSQL metrics via pgx
 │       ├── query/           # Raw SQL as Go string constants
+│       ├── recommend/       # Health scanner: bloat, missing indexes, config drift
 │       ├── service/         # Connection manager, snapshot store
 │       └── ws/              # WebSocket hub and client management
 ├── frontend/
