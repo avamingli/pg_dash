@@ -10,6 +10,12 @@ One binary, one dashboard, works everywhere: single-node PostgreSQL 14+, Apache 
 
 ![PG Dash — Cloudberry/Greenplum Cluster](docs/pg_dash_cbdb.png)
 
+Watch a running query's **real plan tree**, live:
+
+<img src="docs/plan-tree.gif" alt="A running query's real plan tree rendered live: slices light up as they start, per-node row counters climb, the coordinator receives the result" width="720">
+
+The tree is the query's *actual, already-planned* plan — captured from the executor at query start by the [whpg_plan_tree](https://github.com/avamingli/whpg_plan_tree) extension, not an `EXPLAIN` re-plan — animated with the per-node row counters while the query runs. No kernel changes. When pg_dash detects the extension on the monitored server it offers live watch from the Activity Monitor (any running query) and the SQL Editor (the query you just ran), plus frame-by-frame replay of recorded runs.
+
 ## Features
 
 ### Core (All Modes)
@@ -20,6 +26,7 @@ One binary, one dashboard, works everywhere: single-node PostgreSQL 14+, Apache 
 - **Query Analysis** — top queries from `pg_stat_statements` by time, calls, rows, or temp usage with EXPLAIN plan viewer
 - **Query History** — historical query tracking with duration, I/O stats, and filtering
 - **SQL Editor** — execute arbitrary SQL with results table, EXPLAIN visualization, and read-only mode
+- **Live Plan Watch** — on servers with the [whpg_plan_tree](https://github.com/avamingli/whpg_plan_tree) extension, watch a running query's real plan tree with per-node row counters updating live (Activity Monitor: any running query; SQL Editor: the query you just ran), and replay finished runs frame by frame on the Plan Replay page
 - **System** — CPU, memory, disk, network, and PostgreSQL process monitoring via gopsutil
 - **Storage** — dedicated page for disk usage per mount point, database sizes chart, and PGDATA monitoring
 - **Replication** — replica lag, LSN positions, replication slots, and WAL stats
