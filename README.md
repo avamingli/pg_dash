@@ -1,20 +1,25 @@
 # PG Dash
 
-**A full-featured monitoring dashboard for PostgreSQL and MPP clusters (Apache Cloudberry, Greenplum).**
+**The open-source monitoring dashboard for WarehousePG (WHPG).**
 
-Connect to any PostgreSQL instance — standalone or distributed — and get instant visibility into connections, queries, locks, replication, system resources, cluster health, and more through a modern dark-themed web UI with live-updating charts.
+Point it at your WarehousePG cluster — or any GPDB-lineage or plain PostgreSQL server — and get instant visibility into connections, queries, locks, replication, system resources, cluster health, and more through a modern dark-themed web UI with live-updating charts.
 
-One binary, one dashboard, works everywhere: single-node PostgreSQL 14+, Apache Cloudberry, and Greenplum Database.
+Two open-source repos, one demo — this is what they look like together:
 
-![PG Dash — PostgreSQL](docs/screenshot.jpeg)
+- **[whpg_plan_tree](https://github.com/avamingli/whpg_plan_tree)** — the extension that captures the *real*, already-planned plan tree of every running query into shared memory and exposes it over SQL. Nothing to patch, no core changes: install it, and a dashboard can finally show the plan that is actually executing.
+- **[pg_dash](https://github.com/avamingli/pg_dash)** — this repo: the dashboard itself. A single Go binary with a React UI that renders that live plan tree — and every other metric of the cluster — on one page.
 
-![PG Dash — Cloudberry/Greenplum Cluster](docs/pg_dash_cbdb.png)
+![PG Dash — a WarehousePG cluster](docs/whpg.png)
 
 Watch a running query's **real plan tree**, live:
 
 <img src="docs/plan-tree.gif" alt="A running query's real plan tree rendered live: slices light up as they start, per-node row counters climb, the coordinator receives the result" width="720">
 
-The tree is the query's *actual, already-planned* plan — captured from the executor at query start by the [whpg_plan_tree](https://github.com/avamingli/whpg_plan_tree) extension, not an `EXPLAIN` re-plan — animated with the per-node row counters while the query runs. No kernel changes. When pg_dash detects the extension on the monitored server it offers live watch from the Activity Monitor (any running query) and the SQL Editor (the query you just ran), plus frame-by-frame replay of recorded runs.
+The tree is the query's *actual, already-planned* plan — captured from the executor at query start by whpg_plan_tree, not an `EXPLAIN` re-plan — animated with the per-node row counters while the query runs. When pg_dash detects the extension on the monitored server it offers live watch from the Activity Monitor (any running query) and the SQL Editor (the query you just ran), plus frame-by-frame replay of recorded runs.
+
+PG Dash also connects to single-node PostgreSQL 14+; every cluster feature below appears automatically when the target is a distributed WarehousePG (GPDB-lineage) cluster.
+
+![PG Dash — the dashboard](docs/screenshot.jpeg)
 
 ## Features
 
@@ -38,7 +43,7 @@ The tree is the query's *actual, already-planned* plan — captured from the exe
 - **WebSocket** — all metrics broadcast every 2 seconds for truly live dashboards
 - **Historical Snapshots** — 5-minute snapshots stored locally with 7-day retention for time-range comparison
 
-### MPP Cluster Mode (Cloudberry / Greenplum)
+### MPP Cluster Mode (WarehousePG / GPDB-lineage)
 
 When connected to a distributed cluster, PG Dash auto-detects the MPP environment via `SELECT version()` and enables additional features:
 
@@ -107,8 +112,8 @@ When connected to a distributed cluster, PG Dash auto-detects the MPP environmen
 ### 1. Clone and install dependencies
 
 ```bash
-git clone https://github.com/avamingli/pg-dash.git
-cd pg-dash
+git clone https://github.com/avamingli/pg_dash.git
+cd pg_dash
 cd frontend && npm install && cd ..
 ```
 
@@ -182,7 +187,7 @@ Set `PG_DSN` in your environment or `.env` file before running Docker commands.
 ## Project Structure
 
 ```
-pg-dash/
+pg_dash/
 ├── backend/
 │   ├── cmd/server/          # Entry point
 │   └── internal/
