@@ -44,7 +44,8 @@ Go backend (chi router, :4001 default)
    gp_segment_configuration            ├─ Log collector (PG log FATAL/ERROR/WARNING)
                                         └─ Cluster collector (only if distributed)
   Ring buffer (300 entries = 10 min @ 2s) → GetHistory()/GetLatest()
-  SQLite-backed SnapshotStore (5-min snapshots, 7-day retention, ~/.pg-dash/snapshots)
+  SnapshotStore: 5-min snapshots as hourly JSON files, 7-day retention, ~/.pg-dash/snapshots (no SQLite)
+  HistoryService: query history in a dbhouse_query_history table created inside the monitored database
   Alert engine (rule eval against each snapshot, broadcasts via same hub)
 ```
 
@@ -54,7 +55,7 @@ Backend layers, each with one job (`backend/internal/`):
 - `monitor/pg/` — `Collector` (core PG stats), `LogCollector` (tails PG log for FATAL/ERROR/WARNING counts), `ClusterCollector` (MPP-only: segment topology, per-segment replication).
 - `monitor/os/` — `SystemCollector` (gopsutil: CPU/mem/disk/net/processes) + `DeltaCalculator` (turns cumulative counters into per-second rates for disk/network I/O).
 - `monitor/aggregator.go` — ties PG + OS + cluster + log collectors together on one 2s ticker, owns the ring buffer, feeds the alert engine and the WebSocket hub.
-- `service/` — `ConnectionManager` (pool lifecycle, cluster-mode detection, per-database pool cache, reconnect w/ exponential backoff), `SnapshotStore`, `HistoryService` (query history tracking).
+- `service/` — `ConnectionManager` (pool lifecycle, cluster-mode detection, per-database pool cache, reconnect w/ exponential backoff), `SnapshotStore` (JSON files on the dashboard host), `HistoryService` (query history, stored in a table inside the monitored database — the only thing pg_dash writes there).
 - `ws/` — `Hub`/`Client`, broadcasts every aggregator tick to all connected browsers.
 - `alert/` — rule engine; evaluated against each snapshot inside the aggregator loop.
 - `recommend/` — one-shot health scanner (bloat, missing indexes, vacuum debt, config drift) that returns actionable SQL fixes; queried on demand by the Recommendations page, not on the aggregator tick.
