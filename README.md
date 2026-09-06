@@ -31,7 +31,8 @@ PG Dash also connects to single-node PostgreSQL 14+; every cluster feature below
 - **Query Analysis** — top queries from `pg_stat_statements` by time, calls, rows, or temp usage with EXPLAIN plan viewer
 - **Query History** — historical query tracking with duration, I/O stats, and filtering
 - **SQL Editor** — execute arbitrary SQL with results table, EXPLAIN visualization, and read-only mode
-- **Live Plan Watch** — on servers with the [whpg_plan_tree](https://github.com/avamingli/whpg_plan_tree) extension, watch a running query's real plan tree with per-node row counters updating live (Activity Monitor: any running query; SQL Editor: the query you just ran), and replay finished runs frame by frame on the Plan Replay page
+- **Live Plan Watch** — on servers with the [whpg_plan_tree](https://github.com/avamingli/whpg_plan_tree) extension, watch a running query's *real* plan tree with per-node row counters climbing live (Activity Monitor: any running query; SQL Editor: the query you just ran)
+- **Plan Replay** — every watched run can be recorded into a browser-side library and replayed frame by frame on the Plan Replay page, with playback-speed and scrub controls
 - **System** — CPU, memory, disk, network, and PostgreSQL process monitoring via gopsutil
 - **Storage** — dedicated page for disk usage per mount point, database sizes chart, and PGDATA monitoring
 - **Replication** — replica lag, LSN positions, replication slots, and WAL stats
