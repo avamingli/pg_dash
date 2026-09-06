@@ -17,3 +17,8 @@ frontend/dist/
 
 # OS
 .DS_Store
+
+# Rendered demo media (regenerate with scripts/demo-media.sh)
+docs/media/*.png
+docs/media/*.gif
+docs/media/*.mp4
