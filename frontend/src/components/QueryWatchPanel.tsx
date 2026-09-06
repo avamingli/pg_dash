@@ -40,7 +40,13 @@ interface QueryWatchPanelProps {
   onClose: () => void;
 }
 
-const POLL_INTERVAL_MS = 800;
+// How often the Watch panel polls /progress. 800ms is the default; the
+// card animations are 500ms transitions, so anything at or under ~500ms
+// makes the bars move continuously instead of stepping — set
+// VITE_WATCH_POLL_MS=400 for a screen recording. Each poll is two or
+// three light catalog queries against the coordinator, so this is a
+// demo knob, not something to leave at 200 on a shared cluster.
+const POLL_INTERVAL_MS = Number(import.meta.env.VITE_WATCH_POLL_MS) || 800;
 
 // Plain top-level helpers (not written inline in the component body) so the
 // wall-clock reads they do aren't flagged as an impure render — same
