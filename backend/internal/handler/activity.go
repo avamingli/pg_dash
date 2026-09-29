@@ -14,17 +14,21 @@ import (
 func RegisterActivityRoutes(r chi.Router, pool *pgxpool.Pool, connMgr *service.ConnectionManager) {
 	r.Get("/activity", activityListHandler(pool, connMgr))
 	r.Get("/activity/summary", activitySummaryHandler(pool))
-	r.Get("/activity/long-running", longRunningHandler(pool))
-	r.Get("/activity/blocked", blockedHandler(pool))
+	r.Get("/activity/long-running", longRunningHandler(pool, connMgr))
+	r.Get("/activity/blocked", blockedHandler(pool, connMgr))
 	r.Post("/activity/{pid}/cancel", cancelBackendHandler(pool))
 	r.Post("/activity/{pid}/terminate", terminateBackendHandler(pool))
 }
 
 func activityListHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		caps := connMgr.GetCapabilities()
 		sql := query.ActiveConnectionsLegacy
-		if connMgr.GetCapabilities().ActivityQueryID {
+		switch {
+		case caps.ActivityQueryID:
 			sql = query.ActiveConnections
+		case !caps.ActivityWaitEvent:
+			sql = query.ActiveConnectionsPre96
 		}
 		rows, err := queryRows(r.Context(), pool, sql)
 		if err != nil {
@@ -62,13 +66,17 @@ func activitySummaryHandler(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-func longRunningHandler(pool *pgxpool.Pool) http.HandlerFunc {
+func longRunningHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		threshold := r.URL.Query().Get("threshold")
 		if threshold == "" {
 			threshold = "5 seconds"
 		}
-		rows, err := queryRows(r.Context(), pool, query.LongRunningQueries, threshold)
+		sql := query.LongRunningQueries
+		if !connMgr.GetCapabilities().ActivityWaitEvent {
+			sql = query.LongRunningQueriesPre96
+		}
+		rows, err := queryRows(r.Context(), pool, sql, threshold)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -77,9 +85,13 @@ func longRunningHandler(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-func blockedHandler(pool *pgxpool.Pool) http.HandlerFunc {
+func blockedHandler(pool *pgxpool.Pool, connMgr *service.ConnectionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rows, err := queryRows(r.Context(), pool, query.BlockedQueries)
+		sql := query.BlockedQueries
+		if !connMgr.GetCapabilities().ActivityWaitEvent {
+			sql = query.BlockedQueriesPre96
+		}
+		rows, err := queryRows(r.Context(), pool, sql)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return

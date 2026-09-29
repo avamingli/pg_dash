@@ -20,6 +20,7 @@ import (
 // for both kinds of drift.
 type Capabilities struct {
 	ActivityQueryID         bool // pg_stat_activity.query_id (PG 14+)
+	ActivityWaitEvent       bool // pg_stat_activity.wait_event_type (PG 9.6+; pre-9.6 has a "waiting" bool instead)
 	DatabaseSessionStats    bool // pg_stat_database.session_time et al (PG 14+)
 	StatCheckpointer        bool // pg_stat_checkpointer view (PG 17+)
 	ReplicationSlotInactive bool // pg_replication_slots.inactive_since (PG 17+)
@@ -42,7 +43,7 @@ type Capabilities struct {
 	// RealPlanShmem is true when the connected server has the whpg_plan_tree
 	// extension installed (CREATE EXTENSION whpg_plan_tree; zero core
 	// changes required — portable across WHPG7/GPDB7, Cloudberry, and
-	// WHPG19-next; see ~/work/whpg_plan_tree). When true, the watch
+	// other GPDB-lineage cores; see github.com/avamingli/whpg_plan_tree). When true, the watch
 	// endpoint can build the plan-node tree from
 	// whpg_plan_tree.plan_detail (real plan_node_id, real parent/child,
 	// no re-EXPLAIN, no client-side node-numbering). When false, the
@@ -91,6 +92,7 @@ func detectCapabilities(ctx context.Context, pool *pgxpool.Pool) (*Capabilities,
 
 	caps := &Capabilities{
 		ActivityQueryID:         has["pg_stat_activity.query_id"],
+		ActivityWaitEvent:       has["pg_stat_activity.wait_event_type"],
 		DatabaseSessionStats:    has["pg_stat_database.session_time"],
 		StatCheckpointer:        has["pg_stat_checkpointer.num_timed"],
 		ReplicationSlotInactive: has["pg_replication_slots.inactive_since"],

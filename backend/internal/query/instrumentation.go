@@ -27,7 +27,7 @@ ORDER BY segid, nid`
 
 // PlanTreeDetailForSession returns the real plan tree captured at query
 // start by the whpg_plan_tree extension (WHPG7/GPDB7, Cloudberry and
-// WHPG19-next; see service.Capabilities.RealPlanShmem) — one row per
+// other GPDB-lineage cores; see service.Capabilities.RealPlanShmem) — one row per
 // (segment, plan node) with the true plan_node_id/parent_nid/node_type,
 // no re-EXPLAIN and no client-side node-numbering needed. Same
 // ccnt-filtering rationale as InstrumentationDetailForSession.

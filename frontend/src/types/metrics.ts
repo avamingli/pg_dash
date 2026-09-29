@@ -271,7 +271,7 @@ export interface ServerInfo {
   query_metrics_available?: boolean;
   // True when the standalone whpg_plan_tree extension is installed (see
   // Capabilities.RealPlanShmem on the backend) — the real, kernel-captured
-  // plan tree, portable across WHPG7/GPDB7, Cloudberry, and WHPG19-next.
+  // plan tree, portable across WHPG7/GPDB7, Cloudberry, and other GPDB-lineage cores.
   // The live query plan tree feature is hidden entirely (not degraded to
   // an EXPLAIN-based guess) when this is false.
   real_plan_shmem_available?: boolean;
