@@ -13,7 +13,7 @@ Two open-source repos, one demo — this is what they look like together:
 
 Watch a running query's **real plan tree**, live:
 
-<img src="docs/plan-tree.gif" alt="A running query's real plan tree rendered live: slices light up as they start, per-node row counters climb, the coordinator receives the result" width="720">
+https://github.com/user-attachments/assets/218e7729-83e0-40e5-b204-55a96749e7b8
 
 The tree is the query's *actual, already-planned* plan — captured from the executor at query start by whpg_plan_tree, not an `EXPLAIN` re-plan — animated with the per-node row counters while the query runs. When pg_dash detects the extension on the monitored server it offers live watch from the Activity Monitor (any running query) and the SQL Editor (the query you just ran), plus frame-by-frame replay of recorded runs.
 
